@@ -21,8 +21,9 @@ Stage 1 — LSTM target classifier:
   Input:  (cx, cy, vx_unit, vy_unit, vel_mag) per tick
   Output: softmax over 8 target directions
 
-Stage 2 — Analytic corrective velocity:
-  correction = LABEL_TO_DIR[predicted_label] * COPILOT_VEL * confidence
+Stage 2 — Position-aware corrective velocity:
+  direction = normalize(LABEL_TO_DIR[predicted_label] - cursor_pos)
+  correction = direction * COPILOT_VEL * confidence
 
 TRAINING (unchanged from V3)
 ------------------------------
@@ -416,7 +417,16 @@ def build_sequence_augmented(trial: dict, model: nn.Module, rcfg: dict) -> tuple
             conf       = float(torch.softmax(cls_logits, dim=-1).max().item())
             pred_label = int(cls_logits.argmax(dim=-1).item())
 
-            correction = LABEL_TO_DIR[pred_label] * COPILOT_VEL * conf
+            # Correction points from current cursor position toward predicted target,
+            # not in the fixed cardinal direction of the label (which is only correct
+            # when the cursor is at the origin).
+            target_pos         = LABEL_TO_DIR[pred_label]
+            direction_to_target = target_pos - cursor
+            dist               = np.linalg.norm(direction_to_target)
+            if dist > 1e-6:
+                direction_to_target = direction_to_target / dist
+            correction = direction_to_target * COPILOT_VEL * conf
+
             bci_vel    = np.array([vx[t], vy[t]], dtype=np.float32)
             cursor     = np.clip(cursor + bci_vel + correction, -1.5, 1.5)
 
@@ -564,7 +574,16 @@ def evaluate_fast(model: nn.Module, trials: list, rcfg: dict) -> dict:
             logits_t   = model.classifier(lstm_out[:, -1, :])
             conf       = float(torch.softmax(logits_t, dim=-1).max().item())
             pred_t     = int(logits_t.argmax().item())
-            correction = LABEL_TO_DIR[pred_t] * COPILOT_VEL * conf
+
+            # Correction points from current cursor position toward predicted target,
+            # not in the fixed cardinal direction of the label.
+            target_pos          = LABEL_TO_DIR[pred_t]
+            direction_to_target = target_pos - cursor
+            dist                = np.linalg.norm(direction_to_target)
+            if dist > 1e-6:
+                direction_to_target = direction_to_target / dist
+            correction = direction_to_target * COPILOT_VEL * conf
+
             bci_vel    = np.array([trial['vx'][t], trial['vy'][t]], dtype=np.float32)
             cursor     = np.clip(cursor + bci_vel + correction, -1.5, 1.5)
 
