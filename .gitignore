@@ -28,3 +28,5 @@ Thumbs.db
 # data/online_arm_trajectories.csv
 # data/online_arm_trajectories_EEGK_simulation.csv
 # data/OnlineArmTrajectoryEEGK/
+
+data/surrogate/

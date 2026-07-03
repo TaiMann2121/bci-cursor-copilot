@@ -345,3 +345,58 @@ if __name__ == "__main__":
         print(f"  norm: vel_mag_mean={norm.vel_mag_mean:.4f} vel_mag_std={norm.vel_mag_std:.4f}")
         print(f"  default copilot_vel_mag (1/mean_ticks) = {1.0/ticks.mean():.4f}")
         print(f"  basic feature shape (trial 0) = {feat.shape}")
+
+
+# --------------------------------------------------------------------------- #
+# Real-data train/val/test split (for the properly-anchored source comparison)
+# --------------------------------------------------------------------------- #
+def split_real(trajs, val_frac: float = 0.15, test_frac: float = 0.2, seed: int = 0):
+    """Per-subject split of real trajectories.
+
+    TEST  : whole held-out (session,run) block(s), ~test_frac of trials, >=1 block.
+            Leakage-free and deployment-realistic; the common eval set for all sources.
+    VAL   : random stratified (by target) ~val_frac of the remaining trials; used only
+            for per-source hyperparameter (magnitude) selection.
+    TRAIN : the rest. Surrogates must be calibrated from TRAIN only.
+
+    Returns {subject_id: {'train': [...], 'val': [...], 'test': [...]}}.
+    """
+    import numpy as _np
+    from collections import defaultdict as _dd
+    rng = _np.random.default_rng(seed)
+    by_subj = _dd(list)
+    for t in trajs:
+        by_subj[t.subject_id].append(t)
+
+    out = {}
+    for s, ts in by_subj.items():
+        blocks = _dd(list)
+        for t in ts:
+            blocks[(int(t.keys[1]), int(t.keys[2]))].append(t)
+        bkeys = list(blocks.keys())
+        bkeys.sort(key=lambda k: len(blocks[k]))   # smallest-first: minimize test size / train starvation
+        n_total = len(ts)
+
+        # greedily take whole blocks for TEST, ~test_frac of trials (>=1 block,
+        # leave >=1 block for train), stopping before overshooting the target
+        test, test_n, i = [], 0, 0
+        target = test_frac * n_total
+        while i < len(bkeys) - 1:
+            bsize = len(blocks[bkeys[i]])
+            if not test or test_n + bsize <= target:
+                test += blocks[bkeys[i]]; test_n += bsize; i += 1
+            else:
+                break
+        remaining = [t for k in bkeys[i:] for t in blocks[k]]
+
+        # stratified VAL from the remaining trials
+        by_tgt = _dd(list)
+        for t in remaining:
+            by_tgt[t.target_label].append(t)
+        val, train = [], []
+        for tgt, lst in by_tgt.items():
+            lst = list(lst); rng.shuffle(lst)
+            nv = int(round(val_frac * n_total * len(lst) / max(len(remaining), 1)))
+            val += lst[:nv]; train += lst[nv:]
+        out[s] = {"train": train, "val": val, "test": test}
+    return out
