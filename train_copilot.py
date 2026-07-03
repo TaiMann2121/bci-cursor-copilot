@@ -80,13 +80,13 @@ class SeqDataset(Dataset):
 
 def evaluate_group(model, views, norm, cfg) -> dict:
     """Copilot vs BCI accuracy over a set of trials (used for epoch selection)."""
-    cop = bci = 0
-    for v in views:
-        _, final, pred = core.simulate_trajectory(
-            model, v["vel"], norm, cfg["copilot_vel_mag"], cfg["input_feature_set"],
-            DEVICE, cfg["velocity_mode"])
-        cop += int(pred == v["label"])
-        bci += int(core.angle_pred(np.clip(np.cumsum(v["vel"], axis=0)[-1], -1.5, 1.5)) == v["label"])
+    _, _finals, preds = core.simulate_batch(
+        model, [v["vel"] for v in views], norm, cfg["copilot_vel_mag"],
+        cfg["input_feature_set"], DEVICE, cfg["velocity_mode"])
+    labels = np.array([v["label"] for v in views])
+    cop = int((preds == labels).sum())
+    bci = sum(int(core.angle_pred(np.clip(np.cumsum(v["vel"], axis=0)[-1], -1.5, 1.5)) == v["label"])
+              for v in views)
     n = len(views)
     return {"copilot": cop / n, "bci": bci / n, "n": n}
 
@@ -119,10 +119,9 @@ def train_one_model(views: List[dict], norm: cd.NormStats, cfg: dict, tag: str,
             seqs = [core.build_sequence_raw(v["vel"], v["pos"], norm, cfg["input_feature_set"])
                     for v in trn_views]
         else:
-            seqs = [core.simulate_trajectory(model, v["vel"], norm,
-                    cfg["copilot_vel_mag"], cfg["input_feature_set"], DEVICE,
-                    cfg["velocity_mode"])[0]
-                    for v in trn_views]
+            seqs, _, _ = core.simulate_batch(
+                model, [v["vel"] for v in trn_views], norm, cfg["copilot_vel_mag"],
+                cfg["input_feature_set"], DEVICE, cfg["velocity_mode"])
         labels = [v["label"] for v in trn_views]
 
         ds = SeqDataset(seqs, labels, max_ticks, F)

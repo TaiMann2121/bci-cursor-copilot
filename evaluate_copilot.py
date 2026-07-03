@@ -97,10 +97,10 @@ def evaluate(run: Optional[str], single_model: Optional[str], eval_data: str,
         norm = cd.compute_norm_stats(strajs)         # recompute from eval source
         cop = bci = 0
         cerr, berr = [], []
-        for t in strajs:
-            vel = (t.pos[1:] - t.pos[:-1]).astype(np.float32)
-            _, final, pred = core.simulate_trajectory(model, vel, norm, vel_mag,
-                                                      feature_set, DEVICE, velocity_mode)
+        vels = [(t.pos[1:] - t.pos[:-1]).astype(np.float32) for t in strajs]
+        _, finals, preds = core.simulate_batch(model, vels, norm, vel_mag,
+                                               feature_set, DEVICE, velocity_mode)
+        for t, final, pred in zip(strajs, finals, preds):
             lbl = t.target_label
             cop += int(pred == lbl)
             bci += int(cd.label_from_position(t.final_pos) == lbl)

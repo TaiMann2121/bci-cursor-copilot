@@ -227,3 +227,95 @@ def masked_weighted_ce(logits: torch.Tensor, labels: torch.Tensor,
     combined = masks_flat * tick_w
     ce = nn.functional.cross_entropy(logits_flat, labels_flat, reduction="none")
     return (ce * combined).sum() / (combined.sum() + 1e-8)
+
+
+# --------------------------------------------------------------------------- #
+# Batched simulation (vectorized over trials; identical numerics to the loop)
+# --------------------------------------------------------------------------- #
+@torch.no_grad()
+def simulate_batch(
+    model: LSTMCopilot,
+    vel_list,                       # list of (T_i, 2) per-tick BCI velocities
+    norm: NormStats,
+    vel_mag_spec="inv_ticks",
+    feature_set: str = "basic",
+    device: str = "cpu",
+    velocity_mode: str = "additive",
+):
+    """Roll many copilot trajectories at once, stepping the LSTM one tick at a
+    time over the whole batch. Returns (seqs, finals, preds):
+        seqs   : list of (T_i, F) feature arrays (trimmed to each trial length)
+        finals : (B, 2) final cursor per trial
+        preds  : (B,)  final-cursor classification per trial
+    Padded ticks beyond a trial's length are frozen (cursor stops updating).
+    """
+    model.eval()
+    B = len(vel_list)
+    lengths = np.array([len(v) for v in vel_list])
+    Tmax = int(lengths.max())
+    F = model.input_size
+    vel_mag = np.array([resolve_vel_mag(vel_mag_spec, int(L)) for L in lengths], dtype=np.float32)
+    step_fixed = (1.0 / np.maximum(lengths, 1)).astype(np.float32)
+
+    # (B, Tmax, 2) padded velocities
+    V = np.zeros((B, Tmax, 2), dtype=np.float32)
+    for i, v in enumerate(vel_list):
+        V[i, :len(v)] = v
+
+    cursor = np.zeros((B, 2), dtype=np.float32)
+    raw = np.zeros((B, 2), dtype=np.float32)
+    seqs = np.zeros((B, Tmax, F), dtype=np.float32)
+    h = c = None
+    idx = np.arange(B)
+
+    for t in range(Tmax):
+        active = t < lengths                              # (B,) bool
+        bv = V[:, t, :]                                   # (B,2)
+        mag = np.linalg.norm(bv, axis=1)
+        unit = np.zeros_like(bv)
+        nz = mag > 1e-9
+        unit[nz] = bv[nz] / mag[nz, None]
+        mag_scaled = (mag - norm.vel_mag_mean) / norm.vel_mag_std
+        feat = np.concatenate([cursor, unit, mag_scaled[:, None]], axis=1)  # (B,5)
+        if feature_set == "extensive":
+            feat = np.concatenate([feat, raw], axis=1)                      # (B,7)
+        seqs[:, t, :] = feat
+
+        x_t = torch.tensor(feat[:, None, :], dtype=torch.float32, device=device)  # (B,1,F)
+        if h is None:
+            out, (h, c) = model.lstm(x_t)
+        else:
+            out, (h, c) = model.lstm(x_t, (h, c))
+        logits = model.classifier(out[:, -1, :])          # (B,8)
+        probs = torch.softmax(logits, dim=-1)
+        conf = probs.max(dim=-1).values.cpu().numpy()
+        pred = logits.argmax(dim=-1).cpu().numpy()
+
+        # vectorized corrective velocity toward predicted target
+        tgt = _UNIT[pred]                                  # (B,2)
+        d = tgt - cursor
+        dn = np.linalg.norm(d, axis=1)
+        dd = np.zeros_like(d)
+        ok = dn > 1e-6
+        dd[ok] = d[ok] / dn[ok, None]
+        corr = dd * (vel_mag * conf)[:, None]
+
+        if velocity_mode == "additive":
+            step = bv + corr
+        elif velocity_mode == "combined_fixed":
+            comb = bv + corr
+            cn = np.linalg.norm(comb, axis=1)
+            step = np.zeros_like(comb)
+            good = cn > 1e-9
+            step[good] = comb[good] / cn[good, None] * step_fixed[good, None]
+        else:
+            raise ValueError(f"unknown velocity_mode {velocity_mode!r}")
+
+        upd = active[:, None]
+        cursor = np.clip(cursor + step * upd, -1.5, 1.5)
+        raw = np.clip(raw + bv * upd, -1.5, 1.5)
+
+    finals = cursor
+    preds = np.array([angle_pred(finals[i]) for i in range(B)])
+    seqs_trim = [seqs[i, :lengths[i], :] for i in range(B)]
+    return seqs_trim, finals, preds
