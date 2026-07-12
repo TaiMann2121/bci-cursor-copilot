@@ -55,6 +55,7 @@ SRC_COLORS = {
     "eegk_real": "#e8eef4",
     "eegk_sim (raw)": "#f6866f",
     "eegk_sim (scaled)": "#4fd6c8",
+    "eegk_sim (scaled+dwell)": "#7ee081",
     "eegk_surrogate": "#e879a6",
     "blend: real+sim": "#6ea8fe",
     "blend: real+surrogate": "#c9a227",
@@ -104,11 +105,14 @@ def build_payload(cfg) -> dict:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         sim_scaled = ss.scale_sim_to_real(sim_raw, real, match=cfg["match"])
+        # scaled + dwell-calibrated: prepend real-sampled hold (Option A)
+        sim_dwell = ss.add_dwell_to_sim(sim_scaled, real, seed=cfg["seed"])
 
     sources: Dict[str, List[cd.Trajectory]] = {
         "eegk_real": real,
         "eegk_sim (raw)": sim_raw,
         "eegk_sim (scaled)": sim_scaled,
+        "eegk_sim (scaled+dwell)": sim_dwell,
     }
 
     # optional surrogate
@@ -121,10 +125,11 @@ def build_payload(cfg) -> dict:
         print(f"note: no surrogate at {surr_path} -- skipping (run surrogate_constructor.py)")
 
     # blends (concatenation views; ratio-controlled blends come from blend_constructor)
-    sources["blend: real+sim"] = real + sim_scaled
+    # use the fully-calibrated sim (scaled+dwell) -- that's what training will use
+    sources["blend: real+sim"] = real + sim_dwell
     if surr:
         sources["blend: real+surrogate"] = real + surr
-        sources["blend: real+sim+surrogate"] = real + sim_scaled + surr
+        sources["blend: real+sim+surrogate"] = real + sim_dwell + surr
 
     # --- assemble compact payload ---
     payload = {
@@ -222,7 +227,7 @@ const LABEL_BY_NAME={}; for(const [lbl,name] of Object.entries(DATA.label_to_nam
 const COMPASS=['NW','N','NE','W',null,'E','SW','S','SE'];
 const SRC_COLORS=DATA.colors;
 const SOURCES=Object.keys(DATA.sources);
-const DEF=SOURCES.filter(s=>s==='eegk_real'||s==='eegk_sim (scaled)');
+const DEF=SOURCES.filter(s=>s==='eegk_real'||s==='eegk_sim (scaled+dwell)');
 const state={active:new Set(DEF.length?DEF:[SOURCES[0]]),subject:DATA.subjects[0],view:'paths',cap:__CAP0__};
 
 const srcChips=document.getElementById('srcChips');
@@ -278,9 +283,10 @@ function render(){const grid=document.getElementById('grid');grid.innerHTML='';
     grid.appendChild(div);});
   document.getElementById('foot').innerHTML=
     "Rings mark 0.5 and 0.9 normalized radius. Gold ring marks the target direction; "
-    +"each faint line is one trial's cursor path from the origin. Toggle eegk_sim (raw) against "
-    +"eegk_sim (scaled) to see the scaling correction; switch to Endpoints to check where trials land. "
-    +"Scaling is direction-preserving, so endpoint clouds move radially onto the target, never around it.";}
+    +"each faint line is one trial's cursor path from the origin. Compare eegk_sim (raw), "
+    +"(scaled), and (scaled+dwell) to see each calibration step: scaling fixes reach, dwell adds "
+    +"the origin-hold real has. Switch to Endpoints to check where trials land. "
+    +"Scaling and dwell are direction-preserving, so endpoints move radially onto the target, never around it.";}
 render();
 </script></body></html>"""
 

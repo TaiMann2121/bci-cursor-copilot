@@ -31,3 +31,7 @@ Thumbs.db
 
 data/surrogate/
 results/
+
+runs/
+data/blend/
+.DS_Store
