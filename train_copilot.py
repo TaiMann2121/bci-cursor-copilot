@@ -214,6 +214,10 @@ def main():
     ap.add_argument("--grad_clip", type=float, default=1.0)
     ap.add_argument("--batch_size", type=int, default=128)
     ap.add_argument("--val_frac", type=float, default=0.15)
+    ap.add_argument("--fixed_norm", action="store_true",
+                    help="normalize vel-mag with real-derived stats for every group "
+                         "instead of per-blend stats; isolates data composition across "
+                         "blend ratios (removes the train/eval norm-mismatch confound)")
     # infra
     ap.add_argument("--repo_root", default=".")
     ap.add_argument("--surrogate_csv", default="")
@@ -250,10 +254,32 @@ def main():
     manifest = {"config": {k: cfg[k] for k in cfg if k not in ('repo_root',)},
                 "run_dir": str(run_dir), "models": {}}
 
+    # Optional FIXED norm: compute vel-mag normalization ONCE from the real
+    # training pool and reuse it for every group/blend, instead of recomputing
+    # per-blend. This isolates data COMPOSITION as the only variable across blend
+    # ratios: without it, the vel_mag_scaled feature is normalized by the blend's
+    # own stats at train time but by real stats at eval time, so each ratio gets a
+    # different train/eval scale offset -- a confound for the ratio comparison.
+    fixed_norm = None
+    if cfg.get("fixed_norm"):
+        real_ref = cd.load_source("eegk_real", repo_root=cfg["repo_root"])
+        # per-subject real norm, keyed by subject; pooled groups use the global real norm
+        fixed_norm = {"__pooled__": cd.compute_norm_stats(real_ref)}
+        _by = {}
+        for t in real_ref:
+            _by.setdefault(t.subject_id, []).append(t)
+        for s, ts in _by.items():
+            fixed_norm[s] = cd.compute_norm_stats(ts)
+        print("  fixed_norm ON: using real-derived norm for every group "
+              "(data composition is the only variable across ratios)\n")
+
     for tag, gtrajs in groups.items():
         gdir = run_dir / tag
         gdir.mkdir(exist_ok=True)
-        norm = cd.compute_norm_stats(gtrajs)          # per-group (=per-subject) norm
+        if fixed_norm is not None:
+            norm = fixed_norm.get(tag, fixed_norm["__pooled__"])
+        else:
+            norm = cd.compute_norm_stats(gtrajs)      # per-group (=per-subject) norm
         views = [trial_view(t) for t in gtrajs]
         print(f"── group {tag}: {len(views)} trials | "
               f"norm(mean={norm.vel_mag_mean:.4f}, std={norm.vel_mag_std:.4f})")

@@ -31,12 +31,34 @@ DEVICE = "cpu"
 
 
 def load_eval_trajectories(eval_data: str, repo_root: str,
+                           eval_split: str = "test", split_seed: int = 0,
                            exclude_calibration: bool = True) -> List[cd.Trajectory]:
+    """Trajectories to evaluate on.
+
+    eval_split="test" (default, LEAKAGE-FREE): evaluate ONLY on the held-out test
+        blocks from cd.split_real(seed=split_seed) -- the SAME split whose TRAIN
+        blocks were used to build the training data. This is the correct held-out
+        evaluation. `split_seed` MUST match the seed used at training-data
+        construction (blend_constructor / calibration), or train and test will
+        not be complementary.
+    eval_split="all" (LEGACY, LEAKY for real-trained models): all real minus the
+        run-1 calibration block. This overlaps the train blocks and inflates
+        results for any model trained on real; kept only for reproducing old
+        numbers / debugging.
+
+    For non-real eval sources the split does not apply (returned as-is).
+    """
     trajs = cd.load_source(eval_data, repo_root=repo_root)
-    if eval_data == "eegk_real" and exclude_calibration:
-        # keys = (subject, session, run_number, trial, inner_trial); drop run 1
-        trajs = [t for t in trajs if int(t.keys[2]) != 1]
-    return trajs
+    if eval_data != "eegk_real":
+        return trajs
+    if eval_split == "test":
+        splits = cd.split_real(trajs, seed=split_seed)
+        return [t for sub in splits.values() for t in sub["test"]]
+    if eval_split == "all":
+        if exclude_calibration:
+            trajs = [t for t in trajs if int(t.keys[2]) != 1]
+        return trajs
+    raise ValueError(f"unknown eval_split {eval_split!r} (expected test|all)")
 
 
 def load_model(path: str, feature_set: str, hidden_size: int, num_lstm: int) -> core.LSTMCopilot:
@@ -49,8 +71,13 @@ def load_model(path: str, feature_set: str, hidden_size: int, num_lstm: int) -> 
 
 def evaluate(run: Optional[str], single_model: Optional[str], eval_data: str,
              vel_mag: str, feature_set: str, hidden_size: int, num_lstm: int,
-             repo_root: str, velocity_mode: str = "additive"):
-    trajs = load_eval_trajectories(eval_data, repo_root)
+             repo_root: str, velocity_mode: str = "additive",
+             eval_split: str = "test", split_seed: int = 0,
+             json_out: Optional[str] = None) -> dict:
+    """Evaluate a run/model. Returns a structured results dict (and optionally
+    writes it to json_out). Also prints the human-readable report."""
+    trajs = load_eval_trajectories(eval_data, repo_root,
+                                   eval_split=eval_split, split_seed=split_seed)
     by_subj: Dict[str, List[cd.Trajectory]] = {}
     for t in trajs:
         by_subj.setdefault(t.subject_id, []).append(t)
@@ -115,10 +142,14 @@ def evaluate(run: Optional[str], single_model: Optional[str], eval_data: str,
 
     # ---- report ----
     print("=" * 70)
-    print(f"evaluate_copilot | eval_data={eval_data} | "
+    print(f"evaluate_copilot | eval_data={eval_data} | eval_split={eval_split}"
+          f"{' seed='+str(split_seed) if eval_split=='test' else ''} | "
           f"{'run='+run if run else 'model='+single_model}")
     print(f"  vel_mag={vel_mag}  mode={velocity_mode}  features={feature_set}  "
           f"hidden={hidden_size}  layers={num_lstm}")
+    if eval_split == "all":
+        print("  WARNING: eval_split=all is LEAKY for real-trained models "
+              "(overlaps train blocks). Use --eval_split test for held-out results.")
     print("=" * 70)
     print(f"  {'Subject':<8}{'N':>6}{'BCI':>9}{'Copilot':>10}{'Δacc':>9}{'BCIerr':>9}{'Coperr':>9}{'Δerr':>8}")
     print("  " + "-" * 66)
@@ -147,6 +178,36 @@ def evaluate(run: Optional[str], single_model: Optional[str], eval_data: str,
               f"{np.mean(d['cop_err']):>8.2f}°")
     print("=" * 70)
 
+    # ---- structured results (for programmatic use, e.g. the sweep runner) ----
+    results = {
+        "eval_data": eval_data,
+        "eval_split": eval_split,
+        "split_seed": split_seed,
+        "overall": {
+            "n": int(tot_n),
+            "bci_acc": float(B),
+            "cop_acc": float(C),
+            "delta_acc_pp": float((C - B) * 100),
+            "bci_err_deg": float(np.mean(all_berr)),
+            "cop_err_deg": float(np.mean(all_cerr)),
+            "delta_err_deg": float(np.mean(all_berr) - np.mean(all_cerr)),
+        },
+        "per_subject": {
+            s: {
+                "n": int(n),
+                "bci_acc": float(b), "cop_acc": float(c),
+                "delta_acc_pp": float((c - b) * 100),
+                "bci_err_deg": float(be), "cop_err_deg": float(ce),
+                "delta_err_deg": float(be - ce),
+            }
+            for (s, n, b, c, be, ce) in rows
+        },
+    }
+    if json_out:
+        Path(json_out).parent.mkdir(parents=True, exist_ok=True)
+        Path(json_out).write_text(json.dumps(results, indent=2))
+    return results
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -161,10 +222,17 @@ def main():
     ap.add_argument("--hidden_size", type=int, default=64)
     ap.add_argument("--num_lstm", type=int, default=2)
     ap.add_argument("--repo_root", default=".")
+    ap.add_argument("--eval_split", default="test", choices=["test", "all"],
+                    help="test = held-out blocks (leakage-free, default); "
+                         "all = legacy leaky behavior (all real minus run 1)")
+    ap.add_argument("--split_seed", type=int, default=0,
+                    help="seed for cd.split_real; MUST match training-data construction")
+    ap.add_argument("--json_out", default=None, help="optional path to dump results JSON")
     args = ap.parse_args()
     evaluate(args.run, args.model, args.eval_data, args.copilot_vel_mag,
              args.input_feature_set, args.hidden_size, args.num_lstm, args.repo_root,
-             args.velocity_mode)
+             args.velocity_mode, eval_split=args.eval_split, split_seed=args.split_seed,
+             json_out=args.json_out)
 
 
 if __name__ == "__main__":

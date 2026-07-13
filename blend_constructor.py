@@ -146,7 +146,20 @@ def build_blend(
         counts: Dict[str, int] = {}
 
         if mode == "fixed_budget":
-            b = budget if budget is not None else len(src_by_subj.get(real_key, {}).get(subj, []))
+            if budget is not None:
+                b = budget                            # explicit PER-SUBJECT budget
+            else:
+                # default budget = this subject's REAL train-pool size, applied to
+                # EVERY ratio. This size-matches all ratios to real-only (same per-
+                # subject total) with no oversampling: a blend just trades real
+                # trials for sim trials at fixed total. The real pool must be passed
+                # in `pools` even when its weight is 0 (pure-sim), so it can serve
+                # as the budget reference. Falls back to the largest weighted pool
+                # only if the real pool is genuinely absent for this subject.
+                b = len(src_by_subj.get(real_key, {}).get(subj, []))
+                if b == 0:
+                    b = max((len(src_by_subj.get(name, {}).get(subj, []))
+                             for name in weights), default=0)
             for name, w in weights.items():
                 counts[name] = int(round(w * b))
 
