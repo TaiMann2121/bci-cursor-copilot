@@ -42,7 +42,7 @@ FAMILY = {"endpoint_radius":"spatial","endpoint_angle_error_deg":"spatial",
           "length_ticks":"temporal","dwell_ticks":"temporal",
           "step_mag_mean":"kinematic","step_mag_std":"kinematic",
           "wander_index":"kinematic","reversal_rate":"kinematic"}
-SUBJECTS = ["S01","S02","S04","S05","S07"]
+SUBJECTS = None  # derived from real data at load time (see load_sources); excludes sim-only subjects automatically
 DIRS = ["NW","N","NE","W","E","SW","S","SE"]  # display order
 
 
@@ -91,7 +91,10 @@ def summarize(trajs) -> dict:
 
 
 def load_sources(repo_root, seed, match, add_dwell):
-    real = [t for t in cd.load_source("eegk_real", repo_root=repo_root) if t.subject_id in SUBJECTS]
+    global SUBJECTS
+    real = cd.load_source("eegk_real", repo_root=repo_root)
+    SUBJECTS = sorted({t.subject_id for t in real})   # derive from real; sim-only subjects excluded downstream
+    print(f"subjects (from real data): {SUBJECTS}")
     sim_raw = cd.load_source("eegk_sim", repo_root=repo_root)
     sim = ss.scale_sim_to_real(sim_raw, real, match=match)
     if add_dwell:
@@ -139,7 +142,8 @@ def build_workbook(sources, out_path):
     lines = [
         ("Purpose", "Quantify each data source's trajectory profile so 'matching the real data' is measurable. Real EEGK is the reference; synthetic sources are shown beside it."),
         ("Provisional", "Numbers reflect the current 5 subjects (S01,S02,S04,S05,S07). Re-run this script when more real EEGK data lands."),
-        ("Tabs", "metadata_counts = trial counts per subject x direction. per_subject / per_direction = the 8 profile parameters. real_vs_sim = decoder-shared vs subject-specific flag."),
+        ("Tabs", "metadata_counts = trial counts. per_subject / per_direction = the 8 profile parameters. match_subject = go/no-go for adding sim to a subject (PRIMARY). match_direction = which directions sim matches/misses (diagnostic)."),
+        ("match metric", "|sim_mean - real_mean| / real_std, computed WITHIN each subject/direction on its own trials. <1 = sim's mean sits inside real's own trial-to-trial spread (tight match); >2 = outside it (mismatch). Purple '>=10' = real had ~no spread on that param (e.g. a subject whose trajectories are all the same length), so there is no within-group scale to judge against. This is the per-subject decision metric: does sim look like it came from THIS subject's data. Heuristic, not a significance test."),
         ("Core parameters", "SPATIAL: endpoint_radius, endpoint_angle_error_deg | TEMPORAL: length_ticks, dwell_ticks | KINEMATIC: step_mag_mean, step_mag_std, wander_index, reversal_rate"),
         ("wander_index", "path length / straight-line distance; reported as MEDIAN (skewed by a chaotic tail). All other params are means."),
         ("Sources", ", ".join(sources.keys())),
@@ -233,36 +237,86 @@ def build_workbook(sources, out_path):
     param_sheet("per_direction", lambda t: cd.DIR_NAMES[t.target_label], DIRS,
                 "Profile parameters per direction, pooled over subjects (real = highlighted reference)")
 
-    # ---------- real vs sim: decoder-shared vs subject-specific ----------
-    ws = wb.create_sheet("real_vs_sim")
-    ws.cell(row=1, column=1, value="Real vs calibrated sim per subject: |relative difference| per parameter.").font = bold
-    ws.cell(row=2, column=1, value="Small diff => decoder-shared (sim re-decodes same trials, same decoder). Large diff => subject/session-specific.").font = mute
-    hdr = 4
-    ws.cell(row=hdr, column=1, value="Subject")
-    for j, p in enumerate(PARAMS):
-        ws.cell(row=hdr, column=2+j, value=p)
-    style_header(ws, hdr, 1+len(PARAMS))
     real = sources["eegk_real"]; sim = sources.get("eegk_sim_calibrated", [])
-    rr = hdr + 1
-    for si, s in enumerate(SUBJECTS):
-        rsum = summarize([t for t in real if t.subject_id == s])
-        ssum = summarize([t for t in sim if t.subject_id == s])
-        ws.cell(row=rr, column=1, value=s).font = bold; ws.cell(row=rr,column=1).border=border; ws.cell(row=rr,column=1).alignment=ctr
+
+    # ---------- within-group match: does sim match THIS group's own real data? ----------
+    # PRIMARY metric for a per-subject task. For each group (subject or direction):
+    #   |sim_mean - real_mean| / real_std_within_that_group
+    # i.e. how far sim's average sits from real's average, measured in units of that
+    # group's OWN trial-to-trial spread. <1 = sim's mean is inside real's own
+    # distribution (tight match); >2 = outside where real's data usually falls.
+    # Note the opposite failure mode from the between-group metric: a group whose real
+    # data is very CONSISTENT (tiny std) makes even small sim gaps look large; where
+    # real_std ~ 0 the ratio is undefined and shown as ">=CAP" / n-a.
+    STD_FLOOR = 1e-6
+    CAP = 10.0
+
+    def per_trial_vals(trajs, param):
+        return np.array([trajectory_params(t)[param] for t in trajs])
+
+    def within_group_sheet(sheet_name, groups, key_fn, group_label, title):
+        ws = wb.create_sheet(sheet_name)
+        ws.cell(row=1, column=1, value=title).font = bold
+        purpose = ("ANSWERS: should I add sim to a given subject's training data? (go/no-go)"
+                   if group_label == "subject"
+                   else "ANSWERS: for which target directions does sim match / miss real? (diagnostic)")
+        ws.cell(row=2, column=1, value=purpose).font = Font(name=FONT, bold=True, size=10, color="1F5C8B")
+        ws.cell(row=3, column=1, value=("Ratio = |sim_mean - real_mean| / real_std, computed WITHIN each "
+                f"{group_label} on its own trials. <1 = sim's mean is inside real's own distribution "
+                "(tight match); >2 = outside it (mismatch for this "+group_label+").")).font = mute
+        ws.cell(row=4, column=1, value=("Consistency caution: a "+group_label+" whose real data is very "
+                "uniform (near-zero std) inflates the ratio for tiny gaps; '>=10' or 'n/a' means real "
+                "had ~no spread on that param, so there is no within-group scale to judge against.")).font = mute
+        hdr = 6
+        ws.cell(row=hdr, column=1, value=group_label.capitalize())
         for j, p in enumerate(PARAMS):
-            rv, sv = rsum[p], ssum[p]
-            rel = abs(rv - sv) / (abs(rv) + 1e-9)
-            cell = ws.cell(row=rr, column=2+j, value=round(rel, 3))
-            cell.font = reg; cell.alignment = ctr; cell.border = border
-            # shade: green small (shared), red large (subject-specific)
-            if rel < 0.10: cell.fill = PatternFill("solid", fgColor="D6EBD6")
-            elif rel > 0.30: cell.fill = PatternFill("solid", fgColor="F5D6D6")
-            else: cell.fill = PatternFill("solid", fgColor="FBF0D6")
-        rr += 1
-    ws.cell(row=rr+1, column=1, value="green <0.10 (decoder-shared)   yellow 0.10-0.30   red >0.30 (subject-specific)").font = mute
-    ws.column_dimensions["A"].width = 10
-    for j in range(len(PARAMS)):
-        ws.column_dimensions[get_column_letter(2+j)].width = 15
-    ws.freeze_panes = "B5"
+            ws.cell(row=hdr, column=2+j, value=p)
+        style_header(ws, hdr, 1+len(PARAMS))
+        rr = hdr + 1
+        for g in groups:
+            rtr = [t for t in real if key_fn(t) == g]
+            str_ = [t for t in sim if key_fn(t) == g]
+            ws.cell(row=rr, column=1, value=g).font = bold
+            ws.cell(row=rr, column=1).border = border; ws.cell(row=rr, column=1).alignment = ctr
+            for j, p in enumerate(PARAMS):
+                if not rtr or not str_:
+                    val, ratio = None, np.nan
+                else:
+                    rv = per_trial_vals(rtr, p); sv = per_trial_vals(str_, p)
+                    rstd = rv.std()
+                    if rstd < STD_FLOOR:
+                        ratio = np.inf
+                        val = ">=%g" % CAP
+                    else:
+                        ratio = abs(sv.mean() - rv.mean()) / rstd
+                        val = round(min(ratio, CAP), 2) if ratio < CAP else ">=%g" % CAP
+                cell = ws.cell(row=rr, column=2+j, value=val)
+                cell.font = reg; cell.alignment = ctr; cell.border = border
+                if np.isnan(ratio):
+                    cell.fill = PatternFill("solid", fgColor="EEEEEE")
+                elif np.isinf(ratio):
+                    cell.fill = PatternFill("solid", fgColor="E4D6EA")   # undefined (no real spread)
+                elif ratio < 1.0:
+                    cell.fill = PatternFill("solid", fgColor="D6EBD6")
+                elif ratio > 2.0:
+                    cell.fill = PatternFill("solid", fgColor="F5D6D6")
+                else:
+                    cell.fill = PatternFill("solid", fgColor="FBF0D6")
+            rr += 1
+        ws.cell(row=rr+1, column=1,
+                value="green <1 (sim mean inside real's own spread)   yellow 1-2   red >2 (mismatch)   "
+                      "purple = no real spread to judge   grey = n/a").font = mute
+        ws.column_dimensions["A"].width = 12
+        for j in range(len(PARAMS)):
+            ws.column_dimensions[get_column_letter(2+j)].width = 15
+        ws.freeze_panes = "B7"
+
+    within_group_sheet("match_subject", SUBJECTS,
+                       lambda t: t.subject_id, "subject",
+                       "Sim match to each subject's OWN real data (primary per-subject metric)")
+    within_group_sheet("match_direction", DIRS,
+                       lambda t: cd.DIR_NAMES[t.target_label], "direction",
+                       "Sim match to each direction's OWN real data (pooled over subjects)")
 
     wb.save(out_path)
 
