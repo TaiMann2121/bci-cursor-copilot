@@ -45,6 +45,11 @@ import sys
 from pathlib import Path
 from typing import Dict, List
 
+# --- archived: put repo root on sys.path so sibling imports still resolve when
+#     this script is run from archive/ (see archive/README.md) ---
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 import copilot_dataset as cd
 import sim_scaling as ss
 import blend_constructor as bc

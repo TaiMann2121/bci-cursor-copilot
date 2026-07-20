@@ -35,3 +35,8 @@ results/
 runs/
 data/blend/
 .DS_Store
+
+# ── redundant raw archives / experimental caches ──
+data/*.zip
+data/OnlineArmTrajectoryEEGK.zip
+experimental/**/__pycache__/

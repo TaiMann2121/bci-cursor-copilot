@@ -44,6 +44,11 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
+# --- archived: put repo root on sys.path so sibling imports still resolve when
+#     this script is run from archive/ (see archive/README.md) ---
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
 import copilot_dataset as cd
 
 EEGK_ROOT = "data/OnlineArmTrajectoryEEGK"
