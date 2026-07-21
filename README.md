@@ -1,94 +1,77 @@
 # arm-bci-copilot
 
-EEG-BCI robotic arm copilot — supervised LSTM approach for 8-direction arm motor imagery.
+An AI **copilot** for the arm phase of an EEG-BCI typing system. In the two-stage
+paradigm, EEGNet decodes noisy per-tick cursor velocities and the final cursor
+position selects one of 8 directions; the copilot observes the decoded trajectory,
+infers the intended target, and adds a corrective velocity to aid the cursor.
 
-## Result
+> **Read [`PIPELINE.md`](PIPELINE.md) first.** It states the current architecture
+> decision — moving from open-loop replay evaluation to a **closed-loop
+> subject-surrogate** — and the argument for why gains should transfer to human
+> trials. Everything below is the map.
 
-**+1.07pp** improvement over raw BCI decoder (46.70% → 47.77%) on all 7 subjects.  
-Evaluated on the lab's `arm_prediction_label` angular classification metric.
+## Status (current)
 
-| Subject | BCI Baseline | Copilot | Delta |
-|---------|-------------|---------|-------|
-| S01 (train) | 39.3% | 39.8% | +0.4pp |
-| S02 (train) | 57.4% | 59.2% | +1.8pp |
-| S03 (train) | 49.9% | 50.0% | +0.1pp |
-| S04 (train) | 55.1% | 57.0% | +1.8pp |
-| S05 (train) | 43.3% | 44.3% | +1.0pp |
-| S06 (test)  | 34.2% | 35.2% | +1.1pp |
-| S07 (test)  | 47.7% | 48.9% | +1.2pp |
-| **Overall** | **46.7%** | **47.8%** | **+1.07pp** |
+- **Control law is settled:** supervised LSTM target classifier → additive
+  corrective velocity (`copilot_core.py`).
+- **Open-loop gain is small and has plateaued:** ~**+1 pp** endpoint accuracy over
+  raw decoder (raw 53.3% → copilot 54.3%, current 6-subject data, seed 0). The
+  training-data composition study is exhausted (calibrated sim helps only as a
+  ~25% minority augmenter). See `Progress Reports/`.
+- **Active direction:** closed-loop evaluation against a calibrated per-subject
+  surrogate (`closed_loop.py`), because open-loop replay structurally cannot
+  reward a copilot's feedback benefit. See `PIPELINE.md` §3–5.
 
-Train/test gap: 0.12pp — no meaningful overfitting across subjects.
+## Repository map
 
-## Architecture
+### Core pipeline (the product — start here)
+| File | Role |
+| --- | --- |
+| `copilot_core.py` | The model (`LSTMCopilot`) and the Stage-2 corrective-velocity controller. Single source of truth for the control law; imported everywhere. |
+| `copilot_dataset.py` | Data foundation: trajectory parsing, the canonical accuracy/angle metric, normalization, and the leakage-free `split_real`. |
+| `train_copilot.py` | Trains a copilot (Phase-1 BCI features + Phase-2 DAgger augmentation). |
+| `evaluate_copilot.py` | Authoritative **open-loop** held-out evaluation of a trained run. |
+| `blend_constructor.py` | Builds fixed-budget real/sim training blends. |
+| `sim_scaling.py` | Calibrates EEGK-sim onto real (radius scaling + onset dwell). |
+| **`closed_loop.py`** | **The new direction:** per-subject closed-loop surrogate environment + the 3-leg validation harness (`PIPELINE.md` §5). |
+| `trajectory_aware_copilot.py` | Causal accumulated-belief steering + open-loop A/B (fails open-loop; predicted to pay off closed-loop). |
 
-Two-stage supervised copilot, trained on `online_arm_trajectories.csv`:
+### Analysis & diagnostics
+| File | Role |
+| --- | --- |
+| `profile_sources.py` | Per-subject trajectory characterization (spatial/temporal/shape). |
+| `visualize_sources.py` | HTML trajectory visualizations. |
 
-**Stage 1 — LSTM target classifier**  
-Input per tick: `(cursor_x, cursor_y, vx_unit, vy_unit, vel_mag_scaled)` — 5 features  
-Model: 2-layer LSTM, hidden size 64, ~52k parameters  
-Output: probability distribution over 8 target directions
+### Archive (`archive/`)
+Retired-but-runnable scripts, off the critical path (nothing active imports them):
+the endpoint-modeled surrogate (`surrogate_constructor.py`, superseded by
+`closed_loop.py`), the blend-ratio sweep (`sweep_blends.py`), and the ceiling
+diagnostic (`diagnose_residuals.py`). See `archive/README.md`.
 
-**Stage 2 — Confidence-weighted corrective velocity**  
-```
-correction = LABEL_TO_DIR[pred] × COPILOT_VEL × confidence
-confidence = max(softmax(logits))  ∈ [0.125, 1.0]
-final_cursor += bci_vel + correction        # COPILOT_VEL = 0.02
-```
+### Experimental (`experimental/`)
+Problem-2 (language-model) seeds, not yet wired into the copilot. `fusion_pipeline.py`
+fuses motor evidence with a character LM; **it is not runnable as-is** (needs an
+un-committed `harness.py` and `pip install wordfreq`) — see `experimental/README.md`.
 
-## Repository Structure
+### Legacy (reference only; nothing active imports these)
+- `legacyRL/` — the Lee et al. RL-copilot infrastructure (PPO, `env.py`, the
+  data-driven surrogate). Abandoned for the supervised approach; see
+  `legacyRL/README_legacy.md`. Its closed-loop `env.py` is a useful reference for
+  `closed_loop.py`.
+- `legacySL/` — earlier supervised-copilot scripts and the V3 model.
 
-```
-arm-bci-copilot/
-├── data/
-│   ├── online_arm_trajectories.csv          # 7 subjects, 11,760 trials, 8 directions
-│   └── README_online_arm_trajectories.md
-├── supervised_copilot/
-│   └── best_model.pt                         # trained LSTM weights (V3)
-├── train_supervised_copilot.py               # training script
-├── evaluate_supervised_copilot.py            # full evaluation (all 7 subjects)
-├── visualize_copilot.py                      # interactive HTML trajectory visualization
-├── requirements.txt
-├── README.md
-└── legacy/                                   # Lee et al. RL copilot (Run1–Run7)
-    ├── README_legacy.md
-    ├── SJtools/copilot/                       # RL environment, wrapper, callbacks
-    ├── modules/                               # game engine (kf_4_directions etc.)
-    ├── asset/
-    ├── train_rl_copilot.py                   # RL training (Run5 best: +0.74pp)
-    └── evaluate_rl_copilot.py
-```
+### Data (`data/`)
+`OnlineArmTrajectoryEEGK/` — real EEGK online trajectories (6 subjects: S01–S05,
+S07) + per-session `typing_stats.npz`. `online_arm_trajectories_EEGK_simulation.csv`
+— re-decoded sim. See `data/README_online_arm_trajectories.md` for the schema.
+Generated artifacts (`runs/`, `results/`, `data/blend/`, `data/surrogate/`) are
+git-ignored and regenerable.
 
-## Usage
+## Quickstart
 
-### Training
 ```bash
-python train_supervised_copilot.py
-# Output: supervised_copilot/best_model.pt
-#         supervised_copilot/training_log.csv
+# environment: python3.12 with torch, pandas, numpy, scikit-learn (see requirements.txt)
+python closed_loop.py --seed 0 --n_trials 500     # closed-loop surrogate + validation legs
+python trajectory_aware_copilot.py --seed 0        # open-loop trajectory-aware A/B
+python evaluate_copilot.py --run runs/<run_dir> --eval_data eegk_real   # open-loop eval
 ```
-
-### Evaluation (all 7 subjects)
-```bash
-python evaluate_supervised_copilot.py
-# Optional: --model path/to/model.pt
-```
-
-### Visualization
-```bash
-python visualize_copilot.py
-# Output: copilot_visualization.html  (open in browser)
-```
-
-## Training Details
-
-- **Phase 1** (3 epochs): raw BCI-only trajectories from CSV
-- **Phase 2** (25 epochs): DAgger-augmented BCI+Copilot trajectories
-- **Loss**: cross-entropy with linear tick weighting — tick t gets weight (t+1)/T
-- **Optimizer**: Adam, LR 1e-3, StepLR (step_size=6, γ=0.5)
-- **Train/test split**: S01–S05 train, S06–S07 test (subject-level)
-
-## Data
-
-`online_arm_trajectories.csv` — 199,911 rows, 7 subjects, 8 directions, 8 Hz.  
-See `data/README_online_arm_trajectories.md` for full schema.
