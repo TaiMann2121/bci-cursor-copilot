@@ -40,3 +40,6 @@ data/blend/
 data/*.zip
 data/OnlineArmTrajectoryEEGK.zip
 experimental/**/__pycache__/
+
+# LLM reranker response cache (pay-once)
+experimental/.rerank_cache.json
