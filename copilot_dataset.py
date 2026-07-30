@@ -88,6 +88,8 @@ class Trajectory:
     pos: np.ndarray          # (T, 2) cursor position / RADIUS_PX
     arm_pred: np.ndarray     # (T,)  stored per-tick arm_prediction_label (raw, 0-7)
     keys: tuple              # full TRIAL_KEYS tuple (provenance)
+    session_id: Optional[str] = None  # source session folder; disambiguates trials
+                                      # whose TRIAL_KEYS collide across folders
 
     @property
     def n_ticks(self) -> int:
@@ -136,7 +138,12 @@ def evaluate_final_positions(
 # --------------------------------------------------------------------------- #
 # Loading
 # --------------------------------------------------------------------------- #
-def _dataframe_to_trajectories(df: pd.DataFrame) -> List[Trajectory]:
+def _dataframe_to_trajectories(df: pd.DataFrame,
+                               session_id: Optional[str] = None) -> List[Trajectory]:
+    """Group a frame into trajectories. `session_id` (the source folder) is
+    stamped on each trajectory so trials whose TRIAL_KEYS collide across session
+    folders stay distinct. Pass one frame PER session file; concatenating files
+    first and grouping by TRIAL_KEYS alone silently merges colliding trials."""
     trajs: List[Trajectory] = []
     for keys, g in df.groupby(TRIAL_KEYS, sort=False):
         g = g.sort_values("timestamp_seconds")
@@ -148,6 +155,7 @@ def _dataframe_to_trajectories(df: pd.DataFrame) -> List[Trajectory]:
                 pos=pos,
                 arm_pred=g["arm_prediction_label"].to_numpy(dtype=np.int64),
                 keys=tuple(keys),
+                session_id=session_id,
             )
         )
     return trajs
@@ -157,17 +165,36 @@ def load_source(
     source: str,
     repo_root: str = ".",
     subjects: Optional[Sequence[str]] = None,
+    clean: bool = False,
 ) -> List[Trajectory]:
     """Load a data source into a list of Trajectory objects.
 
     Handles CSV sources (old_decoder, eegk_sim) and the nested eegk_real folder.
     surrogate/blend are produced by their constructors and loaded via load_csv_file.
+
+    clean : apply the 7/27 metric-safe cleaning (trim leading pre-onset dwell +
+        per-session scale normalization). Only implemented for eegk_real, where
+        per-session normalization is well defined; ignored for other sources.
+        Default False, so clean-vs-raw stays an A/B on identical trials.
+
+    NOTE: clean=False is NOT the pre-7/27 behavior. eegk_real is now always
+    loaded per session folder to fix the TRIAL_KEYS collision described below,
+    so eegk_real results from before that fix will not reproduce (they were
+    computed on ~3k merged mixed-target trials). This is intended.
     """
     if source in ("old_decoder", "eegk_sim"):
         path = os.path.join(repo_root, DATA_PATHS[source])
         df = pd.read_csv(path)
+        trajs = _dataframe_to_trajectories(df)
     elif source == "eegk_real":
-        df = _load_eegk_real_frame(os.path.join(repo_root, DATA_PATHS[source]))
+        root = os.path.join(repo_root, DATA_PATHS[source])
+        # ALWAYS load per session folder: TRIAL_KEYS collide across folders
+        # (e.g. WordTyping vs SentenceTyping both have session0/run1/trial1), so
+        # the old concat-then-group path silently merged ~3k distinct trials into
+        # corrupted mixed-target sequences. Per-folder loading keeps them distinct.
+        sessions = _load_eegk_real_sessions(root)
+        trajs = clean_trajectory_sessions(sessions) if clean else \
+            [t for s in sessions for t in s]
     else:
         raise ValueError(
             f"load_source does not handle '{source}'. "
@@ -175,8 +202,9 @@ def load_source(
         )
 
     if subjects is not None:
-        df = df[df["subject_id"].isin(list(subjects))]
-    return _dataframe_to_trajectories(df)
+        keep = set(subjects)
+        trajs = [t for t in trajs if t.subject_id in keep]
+    return trajs
 
 
 def load_csv_file(path: str, subjects: Optional[Sequence[str]] = None) -> List[Trajectory]:
@@ -205,6 +233,86 @@ def _load_eegk_real_frame(root: str) -> pd.DataFrame:
             "Expected <root>/<Sxx>/.../online_arm_trajectories.csv"
         )
     return pd.concat((pd.read_csv(f) for f in files), ignore_index=True)
+
+
+def _load_eegk_real_sessions(root: str) -> List[List["Trajectory"]]:
+    """Load each online_arm_trajectories.csv as its own session (list of trials).
+
+    The concatenating loader (_load_eegk_real_frame) drops the folder identity;
+    per-session normalization needs it, so this keeps one list per session file.
+    """
+    pattern = os.path.join(root, "**", "online_arm_trajectories.csv")
+    files = sorted(glob.glob(pattern, recursive=True))
+    if not files:
+        raise FileNotFoundError(
+            f"No EEGK real trajectory CSVs found under {root!r}. "
+            "Expected <root>/<Sxx>/.../online_arm_trajectories.csv"
+        )
+    return [_dataframe_to_trajectories(pd.read_csv(f),
+                                       session_id=os.path.basename(os.path.dirname(f)))
+            for f in files]
+
+
+# --------------------------------------------------------------------------- #
+# Cleaning (7/27 supervisor items). Both steps are METRIC-SAFE: the endpoint
+# metric is direction-only (argmax dot-product), so trimming leading dead ticks
+# and per-session scalar rescaling of positions cannot change any label. Only
+# the copilot's in-the-loop behavior (which reads the cleaned features and adds
+# corrective velocity) can change. Kept opt-in (load_source(clean=True)).
+# --------------------------------------------------------------------------- #
+def trim_leading_dwell(traj: "Trajectory", eps: float = 1e-6) -> "Trajectory":
+    """Drop leading ticks where the cursor has not yet left its start point.
+
+    Keeps from the first tick whose displacement from pos[0] exceeds eps
+    (movement onset). Positions stay absolute (position is a feature); only the
+    dead pre-onset ticks that dilute the sequence are removed. Always keeps >=2
+    ticks as a guard.
+    """
+    pos = traj.pos
+    if len(pos) < 3:
+        return traj
+    d0 = np.linalg.norm(pos - pos[0], axis=1)
+    moved = int(np.argmax(d0 > eps)) if np.any(d0 > eps) else 0
+    onset = max(0, min(moved, len(pos) - 2))
+    if onset == 0:
+        return traj
+    return Trajectory(
+        subject_id=traj.subject_id,
+        target_label=traj.target_label,
+        pos=pos[onset:].copy(),
+        arm_pred=traj.arm_pred[onset:].copy(),
+        keys=traj.keys,
+        session_id=traj.session_id,
+    )
+
+
+def _session_median_radius(trajs: Sequence["Trajectory"]) -> float:
+    return float(np.median([np.linalg.norm(t.final_pos) for t in trajs]))
+
+
+def clean_trajectory_sessions(
+    sessions: List[List["Trajectory"]], do_trim: bool = True, do_scale: bool = True
+) -> List["Trajectory"]:
+    """Apply trim + per-session scale normalization; return flattened trials.
+
+    Per-session scale = (global reference radius) / (this session's median final
+    radius), where the reference is the median over all sessions' median final
+    radius. Rescaling positions rescales velocity (their diff) by the same
+    factor, fixing BOTH the velocity- and trajectory-scale drift in one scalar.
+    Original trial keys are preserved, so split_real still partitions correctly.
+    """
+    target_radius = float(np.median([_session_median_radius(s) for s in sessions]))
+    out: List["Trajectory"] = []
+    for s in sessions:
+        med = _session_median_radius(s)
+        scale = (target_radius / med) if (do_scale and med > 1e-9) else 1.0
+        for t in s:
+            tt = trim_leading_dwell(t) if do_trim else t
+            if scale != 1.0:
+                tt = Trajectory(tt.subject_id, tt.target_label,
+                                tt.pos * scale, tt.arm_pred, tt.keys, tt.session_id)
+            out.append(tt)
+    return out
 
 
 def load_typing_stats(root: str) -> Dict[str, Dict[str, np.ndarray]]:
@@ -372,7 +480,9 @@ def split_real(trajs, val_frac: float = 0.15, test_frac: float = 0.2, seed: int 
     for s, ts in by_subj.items():
         blocks = _dd(list)
         for t in ts:
-            blocks[(int(t.keys[1]), int(t.keys[2]))].append(t)
+            # block = (session folder, session_number, run_number); the folder is
+            # required because (session_number, run_number) collide across folders.
+            blocks[(t.session_id, int(t.keys[1]), int(t.keys[2]))].append(t)
         bkeys = list(blocks.keys())
         bkeys.sort(key=lambda k: len(blocks[k]))   # smallest-first: minimize test size / train starvation
         n_total = len(ts)

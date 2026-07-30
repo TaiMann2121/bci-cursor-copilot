@@ -43,3 +43,6 @@ experimental/**/__pycache__/
 
 # LLM reranker response cache (pay-once)
 experimental/.rerank_cache.json
+
+# Word lock/owner files (created while a .docx is open)
+~$*
