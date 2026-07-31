@@ -50,10 +50,13 @@ CFG = dict(copilot_vel_mag="0.02", input_feature_set="basic", velocity_mode="add
            learning_rate=1e-3, grad_clip=1.0, batch_size=128, val_frac=0.15)
 
 
-def train_and_eval_variant(clean: bool, seed: int, subjects):
+def train_and_eval_variant(clean: bool, seed: int, subjects, clean_kwargs=None):
     """Train per-subject copilots on TRAIN, eval open-loop on TEST. Returns
-    {'overall': {...}, 'per_subject': {s: {...}}}."""
-    real = cd.load_source("eegk_real", clean=clean)
+    {'overall': {...}, 'per_subject': {s: {...}}}.
+
+    clean_kwargs is forwarded to the cleaner (do_trim / do_scale / reference),
+    which is how ablate_cleaning.py decomposes the cleaning effect."""
+    real = cd.load_source("eegk_real", clean=clean, clean_kwargs=clean_kwargs)
     splits = cd.split_real(real, seed=seed)
 
     agg = {"n": 0, "bci": 0, "cop": 0}

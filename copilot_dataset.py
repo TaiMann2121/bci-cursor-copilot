@@ -166,6 +166,7 @@ def load_source(
     repo_root: str = ".",
     subjects: Optional[Sequence[str]] = None,
     clean: bool = False,
+    clean_kwargs: Optional[dict] = None,
 ) -> List[Trajectory]:
     """Load a data source into a list of Trajectory objects.
 
@@ -193,7 +194,7 @@ def load_source(
         # the old concat-then-group path silently merged ~3k distinct trials into
         # corrupted mixed-target sequences. Per-folder loading keeps them distinct.
         sessions = _load_eegk_real_sessions(root)
-        trajs = clean_trajectory_sessions(sessions) if clean else \
+        trajs = clean_trajectory_sessions(sessions, **(clean_kwargs or {})) if clean else \
             [t for s in sessions for t in s]
     else:
         raise ValueError(
@@ -291,20 +292,47 @@ def _session_median_radius(trajs: Sequence["Trajectory"]) -> float:
 
 
 def clean_trajectory_sessions(
-    sessions: List[List["Trajectory"]], do_trim: bool = True, do_scale: bool = True
+    sessions: List[List["Trajectory"]], do_trim: bool = True, do_scale: bool = True,
+    reference: str = "per_subject",
 ) -> List["Trajectory"]:
     """Apply trim + per-session scale normalization; return flattened trials.
 
-    Per-session scale = (global reference radius) / (this session's median final
-    radius), where the reference is the median over all sessions' median final
-    radius. Rescaling positions rescales velocity (their diff) by the same
+    Per-session scale = (reference radius) / (this session's median final
+    radius). Rescaling positions rescales velocity (their diff) by the same
     factor, fixing BOTH the velocity- and trajectory-scale drift in one scalar.
     Original trial keys are preserved, so split_real still partitions correctly.
+
+    reference :
+      'per_subject' (default) -- the reference is the median of THAT SUBJECT's
+          session medians, so each subject is normalized onto their own typical
+          reach and their data is left at its own overall scale.
+      'global' -- one reference (median over all sessions, all subjects).
+
+    Why the default is per_subject: the pipeline trains ONE MODEL PER SUBJECT.
+    A global reference equals per-subject normalization times a per-subject
+    constant c_S, and that constant does NOT cancel: the copilot's corrective
+    magnitude (copilot_vel_mag, e.g. a fixed 0.02) is absolute while the BCI
+    velocity scales with c_S, so a global reference silently changes the
+    copilot's effective strength per subject (measured spread ~35% across
+    S03..S07). Use 'global' only when pooling subjects into one model.
     """
-    target_radius = float(np.median([_session_median_radius(s) for s in sessions]))
+    if reference not in ("per_subject", "global"):
+        raise ValueError(f"unknown reference {reference!r} (expected per_subject|global)")
+
+    if reference == "global":
+        refs = {None: float(np.median([_session_median_radius(s) for s in sessions]))}
+        key_of = lambda sess: None
+    else:
+        by_subj: Dict[str, List[float]] = {}
+        for s in sessions:
+            by_subj.setdefault(s[0].subject_id, []).append(_session_median_radius(s))
+        refs = {k: float(np.median(v)) for k, v in by_subj.items()}
+        key_of = lambda sess: sess[0].subject_id
+
     out: List["Trajectory"] = []
     for s in sessions:
         med = _session_median_radius(s)
+        target_radius = refs[key_of(s)]
         scale = (target_radius / med) if (do_scale and med > 1e-9) else 1.0
         for t in s:
             tt = trim_leading_dwell(t) if do_trim else t
