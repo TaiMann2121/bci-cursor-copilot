@@ -25,9 +25,9 @@ re-run this script whenever the underlying data changes.
 
 RUN
 ---
-    python visualize_sources.py
-    python visualize_sources.py --match step --max_per_cell 30 --out results/profiler.html
-    python visualize_sources.py --subjects S02 S04     # restrict subjects
+    python analysis/visualize_sources.py
+    python analysis/visualize_sources.py --match step --max_per_cell 30 --out results/profiler.html
+    python analysis/visualize_sources.py --subjects S02 S04     # restrict subjects
 
 Everything is path-flexible; defaults match the repo's data/ layout. Output goes
 to results/ (create it / gitignore it alongside runs/ and data/surrogate/).
@@ -43,6 +43,12 @@ from pathlib import Path
 from typing import Dict, List, Sequence
 
 import numpy as np
+
+# repo root on sys.path so the pipeline modules (copilot_dataset, ...) import
+# unchanged when this script is run from here: python analysis/visualize_sources.py
+import os as _os, sys as _sys
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+_sys.path[:0] = [_os.path.dirname(_HERE), _HERE]   # repo root, then this folder
 
 import copilot_dataset as cd
 import sim_scaling as ss

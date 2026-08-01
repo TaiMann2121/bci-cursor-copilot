@@ -30,7 +30,7 @@ Variants (all leakage-free, real-only, identical control law, multi-seed):
 
 RUN
 ---
-    python ablate_cleaning.py --seeds 0 1 2
+    python studies/ablate_cleaning.py --seeds 0 1 2
 """
 from __future__ import annotations
 
@@ -39,6 +39,12 @@ import sys
 from pathlib import Path
 
 import numpy as np
+
+# repo root on sys.path so the pipeline modules (copilot_dataset, ...) import
+# unchanged when this script is run from here: python studies/ablate_cleaning.py
+import os as _os, sys as _sys
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+_sys.path[:0] = [_os.path.dirname(_HERE), _HERE]   # repo root, then this folder
 
 import copilot_dataset as cd
 from experiment_clean import CFG, train_and_eval_variant  # reuse the exact protocol

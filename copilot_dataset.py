@@ -460,30 +460,6 @@ def split_subjects(mode: str) -> Dict[str, List[str]]:
 
 
 # --------------------------------------------------------------------------- #
-# Self-test
-# --------------------------------------------------------------------------- #
-if __name__ == "__main__":
-    import argparse
-
-    ap = argparse.ArgumentParser(description="Self-test the data foundation.")
-    ap.add_argument("--repo_root", default=".")
-    args = ap.parse_args()
-
-    for src in ("old_decoder", "eegk_sim"):
-        trajs = load_source(src, repo_root=args.repo_root)
-        base = baseline_metrics(trajs)
-        norm = compute_norm_stats(trajs)
-        ticks = np.array([t.n_ticks for t in trajs])
-        feat = build_features(trajs[0].pos, norm, "basic")
-        print(f"\n[{src}]")
-        print(f"  trials={len(trajs)}  ticks/trial: {ticks.min()}-{ticks.max()} (mean {ticks.mean():.2f})")
-        print(f"  baseline accuracy = {base['accuracy']*100:.2f}%  mean angle err = {base['angle_error_deg']:.2f} deg")
-        print(f"  norm: vel_mag_mean={norm.vel_mag_mean:.4f} vel_mag_std={norm.vel_mag_std:.4f}")
-        print(f"  default copilot_vel_mag (1/mean_ticks) = {1.0/ticks.mean():.4f}")
-        print(f"  basic feature shape (trial 0) = {feat.shape}")
-
-
-# --------------------------------------------------------------------------- #
 # Real-data train/val/test split (for the properly-anchored source comparison)
 # --------------------------------------------------------------------------- #
 def split_real(trajs, val_frac: float = 0.15, test_frac: float = 0.2, seed: int = 0):
@@ -538,3 +514,27 @@ def split_real(trajs, val_frac: float = 0.15, test_frac: float = 0.2, seed: int 
             val += lst[:nv]; train += lst[nv:]
         out[s] = {"train": train, "val": val, "test": test}
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Self-test
+# --------------------------------------------------------------------------- #
+if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Self-test the data foundation.")
+    ap.add_argument("--repo_root", default=".")
+    args = ap.parse_args()
+
+    for src in ("old_decoder", "eegk_sim"):
+        trajs = load_source(src, repo_root=args.repo_root)
+        base = baseline_metrics(trajs)
+        norm = compute_norm_stats(trajs)
+        ticks = np.array([t.n_ticks for t in trajs])
+        feat = build_features(trajs[0].pos, norm, "basic")
+        print(f"\n[{src}]")
+        print(f"  trials={len(trajs)}  ticks/trial: {ticks.min()}-{ticks.max()} (mean {ticks.mean():.2f})")
+        print(f"  baseline accuracy = {base['accuracy']*100:.2f}%  mean angle err = {base['angle_error_deg']:.2f} deg")
+        print(f"  norm: vel_mag_mean={norm.vel_mag_mean:.4f} vel_mag_std={norm.vel_mag_std:.4f}")
+        print(f"  default copilot_vel_mag (1/mean_ticks) = {1.0/ticks.mean():.4f}")
+        print(f"  basic feature shape (trial 0) = {feat.shape}")

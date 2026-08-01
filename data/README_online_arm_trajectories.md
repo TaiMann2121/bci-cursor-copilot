@@ -17,6 +17,19 @@ subject_id, session_number, run_number, trial_number, inner_trial_number
 
 Rows within a trajectory are ordered by `timestamp_seconds`. The original BCI samples are downsampled by a factor of `128`. For a source sampling rate of `1024 Hz`, the CSV therefore has one row every `0.125` seconds. The arm trial duration is `2` seconds.
 
+> **⚠️ Repo note (added 7/29/2026, not part of the original data documentation).**
+> **That 5-tuple is unique only *within* a session folder, not across folders.**
+> `S01/S01_WordTyping_S0001/` and `S01/S01_SentenceTyping_S0001/` both contain
+> `(S01, 0, 1, 1, 1)` — with *different* `target_label`s. Concatenating the 22 session
+> CSVs and grouping by those five columns therefore fuses distinct trials into
+> mixed-target sequences: it merged 3,030 pairs and collapsed 16,197 trials into
+> 13,167. This defect sat under every real-data result produced before 7/29/2026.
+>
+> **Always load and group per session folder, and treat the folder path as part of
+> the trial key.** `copilot_dataset.load_source("eegk_real")` does this
+> (`_load_eegk_real_sessions`) and carries the folder as `Trajectory.session_id`;
+> `split_real` blocks the held-out test set by folder. See `PIPELINE.md` §2.5.
+
 ## Columns
 
 | Column | Description |

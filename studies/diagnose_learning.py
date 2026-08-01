@@ -28,9 +28,9 @@ learn? The copilot control law is evaluated elsewhere (evaluate_copilot.py).
 
 RUN
 ---
-    python diagnose_learning.py                 # raw vs clean, all subjects
-    python diagnose_learning.py --subjects S01 S04
-    python diagnose_learning.py --epochs 40 --feature_set basic
+    python studies/diagnose_learning.py                 # raw vs clean, all subjects
+    python studies/diagnose_learning.py --subjects S01 S04
+    python studies/diagnose_learning.py --epochs 40 --feature_set basic
 """
 from __future__ import annotations
 
@@ -54,6 +54,12 @@ try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
+
+# repo root on sys.path so the pipeline modules (copilot_dataset, ...) import
+# unchanged when this script is run from here: python studies/diagnose_learning.py
+import os as _os, sys as _sys
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+_sys.path[:0] = [_os.path.dirname(_HERE), _HERE]   # repo root, then this folder
 
 import copilot_core as core
 import copilot_dataset as cd

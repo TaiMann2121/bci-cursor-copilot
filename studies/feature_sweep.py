@@ -32,9 +32,9 @@ Configs swept (on cleaned data):
 
 RUN
 ---
-    python feature_sweep.py                  # all subjects, seed 0
-    python feature_sweep.py --seeds 0 1 2    # multi-seed on the winner check
-    python feature_sweep.py --subjects S04 S05
+    python studies/feature_sweep.py                  # all subjects, seed 0
+    python studies/feature_sweep.py --seeds 0 1 2    # multi-seed on the winner check
+    python studies/feature_sweep.py --subjects S04 S05
 """
 from __future__ import annotations
 
@@ -46,6 +46,12 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
+
+# repo root on sys.path so the pipeline modules (copilot_dataset, ...) import
+# unchanged when this script is run from here: python studies/feature_sweep.py
+import os as _os, sys as _sys
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+_sys.path[:0] = [_os.path.dirname(_HERE), _HERE]   # repo root, then this folder
 
 import copilot_dataset as cd
 from copilot_dataset import per_tick_velocity

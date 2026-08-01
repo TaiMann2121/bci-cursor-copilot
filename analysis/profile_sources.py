@@ -30,6 +30,12 @@ from collections import defaultdict
 from pathlib import Path
 import numpy as np
 
+# repo root on sys.path so the pipeline modules (copilot_dataset, ...) import
+# unchanged when this script is run from here: python analysis/profile_sources.py
+import os as _os, sys as _sys
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+_sys.path[:0] = [_os.path.dirname(_HERE), _HERE]   # repo root, then this folder
+
 import copilot_dataset as cd
 import sim_scaling as ss
 

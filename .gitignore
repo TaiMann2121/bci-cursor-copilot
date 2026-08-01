@@ -7,42 +7,32 @@ __pycache__/
 venv/
 env/
 
-# ── New pipeline: generated artifacts ───────────────────────────────────────
+# ── Generated artifacts (all regenerable; nothing here is an input) ──────────
 runs/                       # train_copilot.py model runs (per-config, per-subject)
-data/surrogate/             # surrogate_constructor.py output
+results/                    # studies/ + analysis/ output (json, html, figures)
 data/blend/                 # blend_constructor.py output
+data/surrogate/             # archive/surrogate_constructor.py output
 *.pt                        # loose model checkpoints (models live under runs/)
 
-# ── Legacy RL run outputs (Lee / SJtools, now under legacyRL/) ───────────────
+# ── Legacy RL run outputs (Lee / SJtools, under legacyRL/) ──────────────────
 legacyRL/SJtools/copilot/runs/LAB_dataDriven_*/
 legacyRL/SJtools/copilot/runs/lab_training/LAB_dataDriven_*/
 legacyRL/SJtools/copilot/runs/LAB_realData_*/
 legacyRL/SJtools/copilot/runs/dev/
 
+# ── Caches ──────────────────────────────────────────────────────────────────
+experimental/.rerank_cache.json      # LLM reranker responses (pay-once)
+
+# ── Redundant raw archives ──────────────────────────────────────────────────
+data/*.zip
+
 # ── OS / editor ─────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+~$*                         # Word lock/owner files (while a .docx is open)
 # .vscode/                  # uncomment if you don't want editor settings tracked
 
-# ── Optional: large source data (uncomment to keep out of git) ───────────────
+# ── Optional: large source data (uncomment to keep out of git) ──────────────
 # data/online_arm_trajectories.csv
 # data/online_arm_trajectories_EEGK_simulation.csv
 # data/OnlineArmTrajectoryEEGK/
-
-data/surrogate/
-results/
-
-runs/
-data/blend/
-.DS_Store
-
-# ── redundant raw archives / experimental caches ──
-data/*.zip
-data/OnlineArmTrajectoryEEGK.zip
-experimental/**/__pycache__/
-
-# LLM reranker response cache (pay-once)
-experimental/.rerank_cache.json
-
-# Word lock/owner files (created while a .docx is open)
-~$*

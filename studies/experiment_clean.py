@@ -20,8 +20,8 @@ Multi-seed; reports mean±sd of Δ per variant.
 
 RUN
 ---
-    python experiment_clean.py --seeds 0 1 2
-    python experiment_clean.py --seeds 0 --subjects S04 S05
+    python studies/experiment_clean.py --seeds 0 1 2
+    python studies/experiment_clean.py --seeds 0 --subjects S04 S05
 """
 from __future__ import annotations
 
@@ -35,6 +35,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
+
+# repo root on sys.path so the pipeline modules (copilot_dataset, ...) import
+# unchanged when this script is run from here: python studies/experiment_clean.py
+import os as _os, sys as _sys
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+_sys.path[:0] = [_os.path.dirname(_HERE), _HERE]   # repo root, then this folder
 
 import copilot_core as core
 import copilot_dataset as cd
