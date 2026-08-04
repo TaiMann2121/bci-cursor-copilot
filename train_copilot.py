@@ -79,8 +79,15 @@ class SeqDataset(Dataset):
 
 
 def evaluate_group(model, views, norm, cfg) -> dict:
-    """Copilot vs BCI accuracy over a set of trials (used for epoch selection)."""
-    _, _finals, preds = core.simulate_batch(
+    """Copilot vs BCI accuracy over a set of trials, plus the classifier-side
+    metrics used for epoch selection.
+
+    `ce` and `cls_acc` are computed on the SAME copilot-rolled sequences the
+    endpoint metric came from, so all four numbers describe one forward pass.
+    They exist because selecting on `copilot` alone lets a mode-collapsed
+    classifier be saved as "best" (see train_one_model).
+    """
+    seqs, _finals, preds = core.simulate_batch(
         model, [v["vel"] for v in views], norm, cfg["copilot_vel_mag"],
         cfg["input_feature_set"], DEVICE, cfg["velocity_mode"])
     labels = np.array([v["label"] for v in views])
@@ -88,7 +95,25 @@ def evaluate_group(model, views, norm, cfg) -> dict:
     bci = sum(int(core.angle_pred(np.clip(np.cumsum(v["vel"], axis=0)[-1], -1.5, 1.5)) == v["label"])
               for v in views)
     n = len(views)
-    return {"copilot": cop / n, "bci": bci / n, "n": n}
+
+    F = seqs[0].shape[1]
+    Tmax = max(s.shape[0] for s in seqs)
+    X = np.zeros((n, Tmax, F), dtype=np.float32)
+    M = np.zeros((n, Tmax), dtype=np.float32)
+    for i, s in enumerate(seqs):
+        X[i, :len(s)] = s
+        M[i, :len(s)] = 1.0
+    model.eval()
+    with torch.no_grad():
+        logits = model(torch.tensor(X, device=DEVICE))
+        y = torch.tensor(labels, dtype=torch.long, device=DEVICE)
+        m = torch.tensor(M, device=DEVICE)
+        ce = core.masked_weighted_ce(logits, y, m, cfg["tick_weighting"],
+                                     cfg["weight_exponent"], DEVICE).item()
+        last = torch.tensor(M.sum(1).astype(np.int64) - 1, device=DEVICE).clamp(min=0)
+        final_logits = logits[torch.arange(n, device=DEVICE), last]
+        cls_acc = float((final_logits.argmax(-1).cpu().numpy() == labels).mean())
+    return {"copilot": cop / n, "bci": bci / n, "ce": ce, "cls_acc": cls_acc, "n": n}
 
 
 def train_one_model(views: List[dict], norm: cd.NormStats, cfg: dict, tag: str,
@@ -107,8 +132,26 @@ def train_one_model(views: List[dict], norm: cd.NormStats, cfg: dict, tag: str,
     opt = torch.optim.Adam(model.parameters(), lr=cfg["learning_rate"])
     sched = torch.optim.lr_scheduler.StepLR(opt, step_size=6, gamma=0.5)
 
+    # Checkpoint selection. Selecting on val COPILOT ENDPOINT accuracy while
+    # training on per-tick CE decouples the criterion from the objective: a
+    # classifier that has collapsed onto the most frequent label can still post a
+    # decent endpoint (the correction is small) and be saved as "best". The 8/4
+    # readout probe found exactly that in 3 of 4 training configs -- S04's saved
+    # model predicted one constant class on every tick. Selecting on validation CE
+    # tracks what is actually optimized and cannot reward collapse.
+    select_on = cfg.get("select_on", "val_ce")
+    if select_on not in ("val_ce", "cls_acc", "copilot"):
+        raise ValueError(f"unknown select_on {select_on!r} "
+                         "(expected val_ce|cls_acc|copilot)")
+
+    def _score(v: dict) -> float:
+        """Higher is better, for every criterion."""
+        return -v["ce"] if select_on == "val_ce" else v[
+            "cls_acc" if select_on == "cls_acc" else "copilot"]
+
     model_path = out_dir / "best_model.pt"
-    best_val = -1.0
+    best_score = -float("inf")
+    best_val = -1.0                      # copilot acc AT the selected checkpoint
     total_epochs = PHASE1_EPOCHS + PHASE2_EPOCHS
 
     for epoch in range(1, total_epochs + 1):
@@ -143,18 +186,22 @@ def train_one_model(views: List[dict], norm: cd.NormStats, cfg: dict, tag: str,
         val = evaluate_group(model, val_views, norm, cfg)
         delta = (val["copilot"] - val["bci"]) * 100
         flag = ""
-        if val["copilot"] > best_val:
+        score = _score(val)
+        if score > best_score:
+            best_score = score
             best_val = val["copilot"]
             torch.save(model.state_dict(), model_path)
             flag = " <- best"
         print(f"    [{tag}] ep {epoch:2d}/{total_epochs} P{phase} "
               f"loss={tot/(toks+1e-8):.4f} val_bci={val['bci']*100:.1f}% "
-              f"val_cop={val['copilot']*100:.1f}% Δ{delta:+.2f}pp "
+              f"val_cop={val['copilot']*100:.1f}% val_ce={val['ce']:.4f} "
+              f"val_cls={val['cls_acc']*100:.1f}% Δ{delta:+.2f}pp "
               f"({time.time()-t0:.0f}s){flag}")
 
     torch.save(model.state_dict(), out_dir / "model.pt")
     return {"tag": tag, "n_train": len(trn_views), "n_val": len(val_views),
-            "best_val_copilot": best_val, "max_ticks": max_ticks,
+            "best_val_copilot": best_val, "select_on": select_on,
+            "best_score": best_score, "max_ticks": max_ticks,
             "norm": norm.to_dict()}
 
 
@@ -214,6 +261,12 @@ def main():
     ap.add_argument("--grad_clip", type=float, default=1.0)
     ap.add_argument("--batch_size", type=int, default=128)
     ap.add_argument("--val_frac", type=float, default=0.15)
+    ap.add_argument("--select_on", choices=("val_ce", "cls_acc", "copilot"),
+                    default="val_ce",
+                    help="checkpoint-selection criterion. 'val_ce' (default) tracks the "
+                         "training objective; 'copilot' is the legacy behaviour, which "
+                         "selects on val endpoint accuracy and can save a mode-collapsed "
+                         "classifier as best (observed on S03/S04, 8/4)")
     ap.add_argument("--fixed_norm", action="store_true",
                     help="normalize vel-mag with real-derived stats for every group "
                          "instead of per-blend stats; isolates data composition across "

@@ -244,28 +244,53 @@ def build_surrogates(splits: dict, rng: np.random.Generator) -> Dict[str, Subjec
 # --------------------------------------------------------------------------- #
 # Copilot (reuse the exact training path used elsewhere, 75/25 blend)
 # --------------------------------------------------------------------------- #
-def train_copilots(splits: dict, seed: int) -> Dict[str, core.LSTMCopilot]:
+def train_copilots(splits: dict, seed: int, sim_frac: float = 0.25,
+                   select_on: str = "val_ce") -> Dict[str, core.LSTMCopilot]:
+    """Train one within-subject copilot per subject on the TRAIN split.
+
+    sim_frac : fraction of calibrated EEGK-sim in the training blend. The 0.25
+        default is the historical production setting; note that the study
+        justifying it predates the 7/29 loader fix (PIPELINE §7). sim_frac=0
+        trains on real trials only, with no resampling.
+    select_on : checkpoint-selection criterion passed to train_one_model.
+        'val_ce' tracks the training objective; 'copilot' is the legacy
+        endpoint-accuracy criterion that can save a mode-collapsed classifier.
+    """
     import blend_constructor as bc
     import sim_scaling as ss
     import train_copilot as tc
 
     cfg = dict(copilot_vel_mag="0.02", input_feature_set="basic", velocity_mode="additive",
                tick_weighting="exponential", weight_exponent=3.0, num_lstm=2, hidden_size=64,
-               learning_rate=1e-3, grad_clip=1.0, batch_size=128, val_frac=0.15)
+               learning_rate=1e-3, grad_clip=1.0, batch_size=128, val_frac=0.15,
+               select_on=select_on)
+    # train_copilot.py seeds torch inside its main(); we call train_one_model
+    # directly, so without this the model init comes from OS entropy and runs are
+    # not reproducible (seed 0 measured +0.85pp in one process and +1.60pp in
+    # another). Seeded per subject below so subject order does not shift results.
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
     real_all = [t for s in splits.values() for t in s["train"]]
-    with contextlib.redirect_stderr(io.StringIO()):
-        sim = ss.add_dwell_to_sim(ss.scale_sim_to_real(cd.load_source("eegk_sim"), real_all),
-                                  real_all, seed=seed)
-    pools = {"eegk_real": real_all, "eegk_sim": sim}
-    blend, _ = bc.build_blend(pools, {"eegk_real": 0.75, "eegk_sim": 0.25},
-                              mode="fixed_budget", budget=None, seed=seed)
+    if sim_frac <= 0:
+        blend = real_all
+    else:
+        with contextlib.redirect_stderr(io.StringIO()):
+            sim = ss.add_dwell_to_sim(ss.scale_sim_to_real(cd.load_source("eegk_sim"), real_all),
+                                      real_all, seed=seed)
+        pools = {"eegk_real": real_all, "eegk_sim": sim}
+        blend, _ = bc.build_blend(pools, {"eegk_real": 1.0 - sim_frac, "eegk_sim": sim_frac},
+                                  mode="fixed_budget", budget=None, seed=seed)
     norm_map = {}
     by = defaultdict(list)
     for t in blend:
         by[t.subject_id].append(t)
     models = {}
-    for subj, gt in sorted(by.items()):
+    for i, (subj, gt) in enumerate(sorted(by.items())):
         norm_map[subj] = cd.compute_norm_stats([t for t in blend if t.subject_id == subj])
+        # per-subject seed: each model gets a distinct but reproducible init, and
+        # adding/removing a subject does not perturb the others' initializations
+        torch.manual_seed(seed * 997 + i)
         with contextlib.redirect_stdout(io.StringIO()):
             d = pathlib.Path(tempfile.mkdtemp())
             tc.train_one_model([tc.trial_view(t) for t in gt], norm_map[subj], cfg, subj, d)

@@ -462,7 +462,8 @@ def split_subjects(mode: str) -> Dict[str, List[str]]:
 # --------------------------------------------------------------------------- #
 # Real-data train/val/test split (for the properly-anchored source comparison)
 # --------------------------------------------------------------------------- #
-def split_real(trajs, val_frac: float = 0.15, test_frac: float = 0.2, seed: int = 0):
+def split_real(trajs, val_frac: float = 0.15, test_frac: float = 0.2, seed: int = 0,
+               random_test_blocks: bool = True):
     """Per-subject split of real trajectories.
 
     TEST  : whole held-out (session,run) block(s), ~test_frac of trials, >=1 block.
@@ -470,6 +471,14 @@ def split_real(trajs, val_frac: float = 0.15, test_frac: float = 0.2, seed: int 
     VAL   : random stratified (by target) ~val_frac of the remaining trials; used only
             for per-source hyperparameter (magnitude) selection.
     TRAIN : the rest. Surrogates must be calibrated from TRAIN only.
+
+    random_test_blocks : if True (default) the TEST blocks are drawn using `seed`,
+        so different seeds hold out different sessions. If False, blocks are taken
+        smallest-first deterministically -- the pre-8/4 behaviour, in which `seed`
+        affected ONLY the val split and every seed shared one identical test set
+        (N=2817 pooled, raw baseline 62.70%, for every seed). That made
+        multi-seed runs measure training variance alone and left cross-split
+        generalization untested; keep False only to reproduce pre-8/4 numbers.
 
     Returns {subject_id: {'train': [...], 'val': [...], 'test': [...]}}.
     """
@@ -488,20 +497,41 @@ def split_real(trajs, val_frac: float = 0.15, test_frac: float = 0.2, seed: int 
             # required because (session_number, run_number) collide across folders.
             blocks[(t.session_id, int(t.keys[1]), int(t.keys[2]))].append(t)
         bkeys = list(blocks.keys())
-        bkeys.sort(key=lambda k: len(blocks[k]))   # smallest-first: minimize test size / train starvation
         n_total = len(ts)
-
-        # greedily take whole blocks for TEST, ~test_frac of trials (>=1 block,
-        # leave >=1 block for train), stopping before overshooting the target
-        test, test_n, i = [], 0, 0
         target = test_frac * n_total
-        while i < len(bkeys) - 1:
-            bsize = len(blocks[bkeys[i]])
-            if not test or test_n + bsize <= target:
-                test += blocks[bkeys[i]]; test_n += bsize; i += 1
-            else:
-                break
-        remaining = [t for k in bkeys[i:] for t in blocks[k]]
+
+        if random_test_blocks:
+            # Draw the held-out sessions with `seed` so different seeds test on
+            # different blocks. Blocks are ADDED ONLY IF THEY FIT under target --
+            # unlike the deterministic path we cannot take the first block
+            # unconditionally, because in shuffled order that block may be huge
+            # and would blow past test_frac.
+            order = list(bkeys)
+            rng.shuffle(order)
+            test_keys, test_n = [], 0
+            for k in order:
+                if len(test_keys) >= len(bkeys) - 1:
+                    break                      # always leave >=1 block for train
+                bsize = len(blocks[k])
+                if test_n + bsize <= target:
+                    test_keys.append(k); test_n += bsize
+            if not test_keys:                  # nothing fit: fall back to smallest
+                test_keys = [min(bkeys, key=lambda k: len(blocks[k]))]
+            tset = set(test_keys)
+            test = [t for k in test_keys for t in blocks[k]]
+            remaining = [t for k in bkeys if k not in tset for t in blocks[k]]
+        else:
+            bkeys.sort(key=lambda k: len(blocks[k]))   # smallest-first: minimize test size / train starvation
+            # greedily take whole blocks for TEST, ~test_frac of trials (>=1 block,
+            # leave >=1 block for train), stopping before overshooting the target
+            test, test_n, i = [], 0, 0
+            while i < len(bkeys) - 1:
+                bsize = len(blocks[bkeys[i]])
+                if not test or test_n + bsize <= target:
+                    test += blocks[bkeys[i]]; test_n += bsize; i += 1
+                else:
+                    break
+            remaining = [t for k in bkeys[i:] for t in blocks[k]]
 
         # stratified VAL from the remaining trials
         by_tgt = _dd(list)

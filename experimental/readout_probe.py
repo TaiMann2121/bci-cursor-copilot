@@ -46,12 +46,27 @@ def classifier_readout(model, trajs, norm, mode):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--clean", action="store_true",
+                    help="metric-safe cleaning (trim leading dwell + per-session rescale). "
+                         "Direction-preserving, so the rawBCI column must not move.")
+    ap.add_argument("--sim_frac", type=float, default=0.25,
+                    help="EEGK-sim fraction in the training blend; 0 = real-only.")
+    ap.add_argument("--eval_norm", choices=("test", "train"), default="test",
+                    help="which NormStats scale the vel_mag feature at eval time. "
+                         "'test' recomputes from the eval split (the house convention, "
+                         "kept as default so earlier logs reproduce); 'train' reuses the "
+                         "stats the model was TRAINED with, removing the train/eval "
+                         "norm-mismatch confound documented at train_copilot.py --fixed_norm. "
+                         "The mismatch differs per blend ratio and per clean/raw, so it is "
+                         "not a constant offset across configs.")
     args = ap.parse_args()
 
-    real_all = cd.load_source("eegk_real")
+    real_all = cd.load_source("eegk_real", clean=args.clean)
     splits = cd.split_real(real_all, seed=args.seed)
-    print(f"Training 75/25 within-subject copilots (seed {args.seed})...")
-    models, _ = train_copilots(splits, args.seed)
+    mix = "real-only" if args.sim_frac <= 0 else f"{1-args.sim_frac:.0%}/{args.sim_frac:.0%} real/sim"
+    print(f"Training within-subject copilots (seed {args.seed}, {mix}, "
+          f"{'clean' if args.clean else 'raw'} inputs, eval_norm={args.eval_norm})...")
+    models, norm_map = train_copilots(splits, args.seed, sim_frac=args.sim_frac)
 
     tot = defaultdict(int)
     dis_tot = {"n": 0, "cls_right": 0, "raw_right": 0}
@@ -63,7 +78,9 @@ def main():
         test = splits[subj]["test"]
         if not test:
             continue
-        norm = cd.compute_norm_stats(test)
+        # The model was trained with norm_map[subj]; recomputing from `test` gives it
+        # a feature scale it never saw. Both readouts below use whichever is selected.
+        norm = cd.compute_norm_stats(test) if args.eval_norm == "test" else norm_map[subj]
         labels = np.array([t.target_label for t in test])
         raw = np.array([cd.label_from_position(t.final_pos) for t in test])
         vels = [(t.pos[1:] - t.pos[:-1]).astype(np.float32) for t in test]
