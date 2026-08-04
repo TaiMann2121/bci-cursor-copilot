@@ -8,11 +8,16 @@ venv/
 env/
 
 # ── Generated artifacts (all regenerable; nothing here is an input) ──────────
-runs/                       # train_copilot.py model runs (per-config, per-subject)
-results/                    # studies/ + analysis/ output (json, html, figures)
-data/blend/                 # blend_constructor.py output
-data/surrogate/             # archive/surrogate_constructor.py output
-*.pt                        # loose model checkpoints (models live under runs/)
+# train_copilot.py model runs (per-config, per-subject)
+runs/
+# studies/ + analysis/ output (json, html, figures)
+results/
+# blend_constructor.py output
+data/blend/
+# archive/surrogate_constructor.py output
+data/surrogate/
+# loose model checkpoints (models live under runs/)
+*.pt
 
 # ── Legacy RL run outputs (Lee / SJtools, under legacyRL/) ──────────────────
 legacyRL/SJtools/copilot/runs/LAB_dataDriven_*/
@@ -21,7 +26,8 @@ legacyRL/SJtools/copilot/runs/LAB_realData_*/
 legacyRL/SJtools/copilot/runs/dev/
 
 # ── Caches ──────────────────────────────────────────────────────────────────
-experimental/.rerank_cache.json      # LLM reranker responses (pay-once)
+# LLM reranker responses (pay-once)
+experimental/.rerank_cache.json
 
 # ── Redundant raw archives ──────────────────────────────────────────────────
 data/*.zip
@@ -29,7 +35,8 @@ data/*.zip
 # ── OS / editor ─────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
-~$*                         # Word lock/owner files (while a .docx is open)
+# Word lock/owner files (while a .docx is open)
+~$*
 # .vscode/                  # uncomment if you don't want editor settings tracked
 
 # ── Optional: large source data (uncomment to keep out of git) ──────────────
