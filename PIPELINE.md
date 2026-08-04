@@ -5,12 +5,21 @@ for why its improvements are likely to carry over to real human trials. Read it
 after `README.md`; for a code-reading order see `READING_GUIDE.md`. Code details
 live in the module docstrings; the empirical history lives in `Progress Reports/`.
 
-> **Status of this document (updated 7/29/2026).** The architecture argument in
-> §3–§5 stands. The *measurements* it was originally built on do not: a loader
-> defect (§2.5) corrupted the real-data trial set behind every pre-7/29 number, and
-> the corrected raw-decoder baseline is **64.0%**, not the ~53–55% quoted below and
-> in earlier reports. §2 now marks each claim by whether it survives. §7 sorts the
-> standing conclusions; §8 gives the current next steps. Do not quote a number from
+> **Status of this document (updated 8/4/2026).** Two rounds of correction have
+> passed over this file. (1) A loader defect (§2.5) corrupted the real-data trial
+> set behind every pre-7/29 number; the pooled raw-decoder baseline is **64.04%**,
+> not the ~53–55% quoted below and in earlier reports. (2) On 8/4 three further
+> defects surfaced (§2.6): checkpoint selection was saving mode-collapsed
+> classifiers, test blocks were selected deterministically so no result had ever
+> been tested across splits, and torch was unseeded so runs were irreproducible.
+>
+> **What survived all of it:** the copilot's gain is real and generalizes —
+> **+1.01 ± 0.39 pp over a shuffled-label null, 8/8 randomized splits**.
+> **What did not:** the diagnosis in §3 that open-loop *evaluation* is the
+> bottleneck. See §2.6 and §7.
+>
+> §2 marks each claim by whether it survives; §7 sorts the standing conclusions.
+> **§8 is superseded by [`ROADMAP.md`](ROADMAP.md).** Do not quote a number from
 > this file that §7 lists as *pending re-run*.
 
 ---
@@ -39,11 +48,17 @@ The work converged through a disciplined funnel (see `Progress Reports/`), and i
 is worth being clear about what is *known*, because it directly determines the
 final architecture:
 
-1. **The control law works, but the open-loop gain is small.** ✅ *Survives, and is
-   re-measured.* A within-subject copilot improves endpoint accuracy by roughly
-   **+1 pp** over the raw decoder. On the fixed loader and held-out test blocks
-   (3 seeds): raw inputs **+1.10 ± 0.30 pp**, cleaned inputs **+1.43 ± 0.16 pp**,
-   over a 62.7% raw-decoder baseline on those blocks (64.0% over all trials).
+1. **The control law works, the open-loop gain is small, and it now has a null
+   control.** ✅ *Survives, re-measured, and null-controlled (8/4).* A
+   within-subject copilot improves endpoint accuracy by roughly **+1 pp** over the
+   raw decoder. On the fixed loader and held-out test blocks (3 seeds): raw inputs
+   **+1.10 ± 0.30 pp**, cleaned inputs **+1.43 ± 0.16 pp**.
+   The 8/4 null control (§2.6) puts this on firm ground: across **8 randomized
+   splits**, trained **+1.30 ± 0.28 pp** vs a **shuffled-label null at
+   +0.30 ± 0.30 pp**, paired difference **+1.01 ± 0.39 pp, positive on 8/8**
+   (t = 7.2, CI [+0.73, +1.28]). A maximally confident but permanently *wrong*
+   pusher loses **6.75 pp**, so the control law is not flattering the metric.
+   **The honest headline is the null-subtracted +1.01 pp.**
 
 2. **Training-data composition has been mined out.** ⚠️ *Pending re-run.* The
    finding was: real-only is a strong baseline; calibrated EEGK-sim helps only as a
@@ -56,18 +71,30 @@ final architecture:
    contradicted.* The residual diagnostic reported ~87% of the decoder's wrong
    trials carry *no recoverable intent* in the replayed trajectory, with the model's
    belief pointing at the true target on ~28% of wrong trials but only ~8%
-   converting into the endpoint. Two caveats now attach: it was measured on the
-   corrupted trial set, and it never measured whether the classifier *learns* — the
-   7/29 learning diagnostic (`studies/diagnose_learning.py`) shows it plainly does
-   (train CE far below chance, validation tracking, 57–78% final-tick target
-   accuracy vs 12.5% chance). What remains solid is that smarter **open-loop**
-   steering (`trajectory_aware_copilot.py`) **fails**: causal accumulated-belief
-   steering never beats the instantaneous copilot, and steering harder makes it
+   converting into the endpoint. Three caveats now attach: it was measured on the
+   corrupted trial set; it predates the 8/4 selection fix, so the model behind it
+   may have been mode-collapsed; and it never measured whether the classifier
+   *learns*. What remains solid is that smarter **open-loop** steering
+   (`trajectory_aware_copilot.py`) **fails**: causal accumulated-belief steering
+   never beats the instantaneous copilot, and steering harder makes it
    monotonically worse (−0.18 to −2.26 pp).
 
+4. **The classifier reads the trajectory about as well as the endpoint does.**
+   ✅ *New (8/4), one split.* With checkpoint selection fixed, the direct
+   classifier readout equals the raw endpoint argmax — **65.1% vs 65.1%** on
+   matched held-out trials — and on trials where the two disagree neither
+   dominates (37% vs 42%). Note this is **not** a demonstrated ceiling: it is
+   equally consistent with "the trajectory carries nothing beyond the endpoint"
+   and with "the classifier is fine now that it trains properly." The current data
+   does not separate those.
+   *Superseded reading:* the 7/29 learning diagnostic's 57–78% final-tick accuracy
+   comes from a **stratified random** split, where trials from one session appear
+   in both train and val. It measures *fitting*, not cross-session generalization,
+   and must not be compared against session-blocked numbers.
+
 **These facts point at one conclusion, and it is the crux of this document.** The
-re-runs in §8 can change the magnitudes; the structural argument in §3 does not
-depend on them.
+re-runs in `ROADMAP.md` can change the magnitudes; the structural argument in §3
+does not depend on them — but see §2.6, which undercuts §3's *diagnosis*.
 
 ---
 
@@ -100,7 +127,64 @@ or `evaluate_copilot.py`.
 
 ---
 
+## 2.6. The three defects found on 8/4, and what they cost
+
+Found while running the §8 re-runs (`experimental/readout_probe.py`,
+`studies/null_control.py`). All three are fixed; each invalidated a class of
+earlier measurement.
+
+1. **Checkpoint selection was saving mode-collapsed classifiers.**
+   `train_copilot.train_one_model` selected its checkpoint on validation *copilot
+   endpoint* accuracy while training on per-tick CE. Those are decoupled: the
+   correction is small, so a classifier that had collapsed onto the single most
+   frequent label still posts a passable endpoint and gets saved as "best". This
+   happened in **3 of 4 training configs** — S04's saved model predicted one
+   constant class on every tick (readout 18.5%, exactly its most-common test
+   label; S03 exactly 19.8%). Fixed: `--select_on val_ce` is now the default, and
+   `evaluate_group` reports `ce`/`cls_acc` so a collapse is visible during
+   training. After the fix S03 19.8% → 63.1%, S04 18.5% → 77.1%.
+   **Cost:** any trajectory-side conclusion measured before 8/4 may have been
+   measured on a collapsed model.
+
+2. **Test blocks were selected deterministically.** `split_real` sorted blocks by
+   size and took them smallest-first; the rng touched only the val split. Every
+   "seed" therefore shared one identical held-out set, and **no result in this
+   project's history had ever been tested across splits.** Fixed:
+   `random_test_blocks=True` is the default (`False` reproduces pre-8/4 splits).
+   **Cost:** held-out baselines turn out to range **63.3–66.6%** depending on which
+   sessions are held out — so every "how much headroom is left" argument computed
+   on one split carries ±1.4 pp it never accounted for. (The pooled 64.04% over
+   all 16,197 trials is unaffected; it is a different statistic.)
+
+3. **Torch was never seeded on the `train_copilots` path.** `train_copilot.py`
+   seeds inside `main()`, which `closed_loop.train_copilots` bypasses. Model init
+   came from OS entropy, so nominally identical runs differed: seed 0 measured
+   +0.85 pp in one process and +1.60 pp in another. Fixed: seeded globally and
+   per subject.
+   **Cost:** single-run numbers in earlier reports carry ~±0.4 pp of unlabelled
+   init noise.
+
+**The methodological lesson, which is why the null control exists.** A single
+split or single training run pointed the *wrong way* twice in one day here: on one
+split the copilot read +0.85 pp against a +0.28 pp null and looked like noise;
+across 8 splits the null centres near zero and the effect is solid at
++1.01 ± 0.39 pp. Report gains against a null and across splits, or do not report
+them.
+
+---
+
 ## 3. The diagnosis: the open-loop *evaluation* is the bottleneck
+
+> ⚠️ **Weakened 8/4.** This section argues the copilot's belief is fine and the
+> *open-loop replay* is what caps the gain. Two 8/4 results cut against it. The
+> ~87% "uncorrectable" figure it leans on came from a run predating the selection
+> fix, so it may describe a collapsed model rather than a property of the data
+> (§2.6). And with selection fixed, the classifier readout only *matches* the raw
+> endpoint (§2 item 4) — a belief at parity with the trivial readout is not a
+> belief being held back by the evaluation protocol. The closed-loop pivot may
+> still be right, but this diagnosis is no longer the argument for it; the
+> compounding effect across characters in the language architecture is
+> (`ROADMAP.md` Phase 4).
 
 Every result above was measured **open-loop**: a recorded BCI velocity stream is
 replayed and the copilot's correction is added on top. The recorded velocities
@@ -208,8 +292,11 @@ single operating point; (c) the decisive test — a small **closed-loop human pi
 
 **Implemented and verified on the fixed loader:** the control law (`copilot_core.py`);
 the leakage-free within-subject protocol (`copilot_dataset.split_real`, now blocking
-by session folder); per-session loading and metric-safe cleaning
-(`copilot_dataset.py`); the learning / feature / cleaning diagnostics (`studies/`).
+by session folder **and randomizing which blocks are held out**); per-session loading
+and metric-safe cleaning (`copilot_dataset.py`); the learning / feature / cleaning
+diagnostics (`studies/`); the null control (`studies/null_control.py` +
+`aggregate_null_control.py`) and the readout probe
+(`experimental/readout_probe.py`, now with `--clean` / `--sim_frac` / `--eval_norm`).
 
 **Implemented, not yet re-measured on the fixed loader:** the closed-loop surrogate
 and its legs 1–2 (`closed_loop.py`), the reactive variant
@@ -229,25 +316,38 @@ through the `studies/` scripts, which call `load_source(clean=True)` themselves.
 | --- | --- |
 | Additive corrective velocity is the right control law | ✅ Stands |
 | Within-subject, one model per subject | ✅ Stands |
-| Open-loop copilot gain ≈ +1 pp (+1.43 pp cleaned) | ✅ Re-measured on the fixed loader, 3 seeds |
-| The LSTM learns target information from trajectory alone | ✅ New (7/29), on the fixed loader |
+| **The copilot gain is real and generalizes: +1.01 ± 0.39 pp over a shuffled-label null, 8/8 randomized splits** | ✅ **New (8/4), null-controlled** |
+| The control law is not free lunch (a confident wrong pusher loses 6.75 pp) | ✅ New (8/4) |
 | Cleaning helps; trimming is the active ingredient | ✅ New (7/29), on the fixed loader |
-| Feature engineering is exhausted; signal is in velocity, not position | ✅ New (7/29), on the fixed loader |
+| Feature engineering is exhausted; signal is in velocity, not position | ⚠️ Predates the 8/4 selection fix — re-run before quoting |
 | Smarter open-loop steering fails | ✅ Stands qualitatively; magnitudes pending re-run |
-| Sim helps only as a ~25% minority augmenter | ⚠️ Pending re-run (corrupted trial set) |
-| ~87% of decoder errors carry no recoverable intent | ⚠️ Pending re-run; and it never tested whether the model learns |
+| Classifier readout ≈ raw endpoint (65.1% vs 65.1%) | ✅ New (8/4), but **one split**, and not a demonstrated ceiling |
+| The LSTM learns target information from trajectory alone | ⚠️ Qualified: the 57–78% is from a *random* split (measures fitting, not cross-session generalization) |
+| Sim helps only as a ~25% minority augmenter | ⚠️ Pending re-run; and sim in the blend is one of the conditions that *triggered* mode collapse (§2.6) |
+| ~87% of decoder errors carry no recoverable intent | ⚠️ Pending re-run; may describe a collapsed model |
 | The 7/22 arm-phase / language probes | ⚠️ Pending re-run |
-| Raw-decoder baseline | ❌ Superseded: **64.0%**, not ~53–55% |
+| Open-loop *evaluation* is the bottleneck (§3) | ⚠️ Weakened (8/4) — see §3 banner |
+| Pooled raw-decoder baseline (all 16,197 trials) | ✅ **64.04%**, not ~53–55% |
+| A single held-out baseline figure | ❌ Superseded: held-out baselines range **63.3–66.6%** by split (§2.6) |
 
 ---
 
 ## 8. Next steps
 
+> **Superseded 8/3/2026 by [`ROADMAP.md`](ROADMAP.md).** The 8/3 supervisor
+> meeting green-lit the pivot to a joint language + trajectory copilot, which
+> reprioritizes the list below (notably: the blend re-run is deliberately
+> dropped, and the language probes move onto the critical path). The section is
+> kept for the reasoning; follow `ROADMAP.md` for what to actually do next.
+
 **Blocking — re-establish the baselines.** Re-run, on the fixed loader, the
 training-data composition study (`archive/sweep_blends.py`), the ceiling diagnostic
 (`archive/diagnose_residuals.py`), and the 7/22 probes (`experimental/`). Until this
 is done we do not know which of the last month's conclusions survive, and the
-corrected 64.0% baseline changes the denominator of every headroom argument.
+baseline changes the denominator of every headroom argument. *(8/4: partly done —
+`readout_probe` and the null control are complete; the blend re-run is deliberately
+dropped. The denominator point is sharper than written here: held-out baselines
+range 63.3–66.6% by split, so there is no single denominator — see §2.6.)*
 
 **Then, in priority order:**
 1. Adopt cleaned inputs as the default path — trimming unconditionally, rescaling
