@@ -13,7 +13,7 @@ python experimental/readout_probe.py --seed 0
 
 | File | Question |
 | --- | --- |
-| `readout_probe.py` | Is the *control law* the bottleneck, or the classifier? Compares raw-BCI endpoint argmax, the copilot rollout, and two direct classifier readouts (final-tick argmax, belief-aggregated argmax) on the same held-out trials, then asks which is right on the trials where they disagree. |
+| `readout_probe.py` | Is the *control law* the bottleneck, or the classifier? Compares raw-BCI endpoint argmax, the copilot rollout, and two direct classifier readouts (final-tick argmax, belief-aggregated argmax) on the same held-out trials, then asks which is right on the trials where they disagree. **Answer (8/4, post-fix): neither — the classifier readout sits at *parity* with the raw endpoint (65.1% vs 65.1%), disagreements 37% vs 42%.** Flags: `--clean`, `--sim_frac` (0 = real-only), `--eval_norm {test,train}`. Use `--eval_norm train` to avoid the train/eval norm mismatch documented at `train_copilot.py --fixed_norm`; the `test` default preserves the house convention so older logs reproduce. |
 | `closed_loop_reactive.py` | The credible closed-loop test. Replaces the parametric surrogate in `../closed_loop.py` with a data-driven one (real per-tick control errors replayed from the *current* cursor, so leg-1 faithfulness is automatic) and adds **user persistence α**: α=0 is open-loop replay, α=1 is fully closed-loop. Sweeping α maps how much of the copilot's benefit depends on the user reacting — that dependence is the result. |
 | `prior_fusion_probe.py` | Does a language prior over the next *direction* beat motor-alone on the arm phase? Fuses a von-Mises motor posterior around the raw endpoint angle with an English group n-gram, under oracle and decoded context. |
 
@@ -34,5 +34,17 @@ bridge in `PIPELINE.md` §4. `prior_fusion_probe.py` measures what that is worth
 the direction level; `word_decode.py` / `sentence_decode.py` show where the larger
 headroom is.
 
-**Caveat:** every number produced in this folder predates the 7/29 loader fix and is
-pending re-run on the corrected trial set (`PIPELINE.md` §7).
+**As of 8/3 this folder is no longer off the critical path.** The supervisor
+green-lit the pivot to a joint language + trajectory copilot, so these probes are
+prototypes of the new architecture rather than side experiments. `ROADMAP.md`
+Phase 2 identifies the biggest unexploited lever: the user is constrained to a
+**closed word library with known word length**, so the prior over the next
+direction should be a **trie over library words still consistent with the prefix
+typed so far** — far sharper than the generic English character n-gram these
+probes use, and usable from tick 0 because it is fixed for a character's whole
+arm phase. Re-running `prior_fusion_probe.py` is ROADMAP task 0.2, the next item.
+
+**Caveat:** every number produced in this folder except `readout_probe.py`'s
+predates the 7/29 loader fix *and* the 8/4 checkpoint-selection fix, so it may
+have been measured on both a corrupted trial set and a mode-collapsed model
+(`PIPELINE.md` §2.5, §2.6). Pending re-run.
